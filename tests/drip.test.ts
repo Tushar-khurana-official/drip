@@ -1,0 +1,308 @@
+import { test, before, after } from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import http from 'node:http';
+import type { Server } from 'node:http';
+import type { WaTemplate } from '../src/types';
+
+/* ---------- a fake WhatsApp API (same shape as Meta / the gateway) ---------- */
+
+const TEMPLATES: WaTemplate[] = [
+  {
+    name: 'appointment_reminder', language: 'en', status: 'APPROVED', category: 'UTILITY',
+    components: [
+      { type: 'HEADER', format: 'TEXT', text: 'Hi {{1}}' , example: { header_text: ['Priya'] } },
+      { type: 'BODY', text: 'Dear {{1}}, your appointment at {{2}} is on {{3}}.', example: { body_text: [['Priya', 'Clinic', 'Monday']] } },
+      { type: 'FOOTER', text: 'Reply STOP to opt out' },
+      { type: 'BUTTONS', buttons: [{ type: 'URL', text: 'Details', url: 'https://example.com/a/{{1}}' }, { type: 'QUICK_REPLY', text: 'OK' }] },
+    ],
+  },
+  {
+    name: 'offer_named', language: 'hi', status: 'APPROVED', category: 'MARKETING', parameter_format: 'NAMED',
+    components: [
+      { type: 'HEADER', format: 'IMAGE' },
+      { type: 'BODY', text: 'Namaste {{customer_name}}, {{offer}} sirf aaj!' },
+    ],
+  },
+  { name: 'draft_one', language: 'en', status: 'PENDING', components: [{ type: 'BODY', text: 'Hello' }] },
+];
+
+const sent: any[] = [];
+let failNext = false;
+const fake = http.createServer((req, res) => {
+  const auth = req.headers.authorization;
+  res.setHeader('Content-Type', 'application/json');
+  if (auth !== 'Bearer test-token') return res.end(JSON.stringify({ success: false, error: 'unauthorized access' }));
+  if (req.method === 'GET' && req.url?.startsWith('/v19.0/WABA1/message_templates')) return res.end(JSON.stringify({ data: TEMPLATES, paging: {} }));
+  if (req.method === 'POST' && req.url === '/v19.0/PHONE1/messages') {
+    let body = '';
+    req.on('data', (c) => (body += c));
+    req.on('end', () => {
+      if (failNext) {
+        failNext = false;
+        res.statusCode = 400;
+        return res.end(JSON.stringify({ error: { message: 'Recipient not on WhatsApp', code: 131026 } }));
+      }
+      sent.push(JSON.parse(body));
+      res.end(JSON.stringify({ messaging_product: 'whatsapp', messages: [{ id: `wamid.${sent.length}` }] }));
+    });
+    return;
+  }
+  res.statusCode = 404;
+  res.end(JSON.stringify({ error: 'invalid path request' }));
+});
+
+const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'drip-test-'));
+let server: Server;
+let base = '';
+let cookie = '';
+
+let L: typeof import('../src/lib/leads');
+let T: typeof import('../src/lib/templates');
+let W: typeof import('../src/server/whatsapp');
+let S: typeof import('../src/server/sender');
+let ST: typeof import('../src/server/store');
+
+before(async () => {
+  fake.listen(0);
+  await new Promise((r) => fake.once('listening', r));
+  const fa = fake.address();
+  Object.assign(process.env, {
+    DATA_DIR: dataDir,
+    APP_EMAIL: 'owner@example.test',
+    APP_PASSWORD: 'owner-test-password',
+    SESSION_SECRET: 'test-secret-test-secret-1234',
+    CRON_SECRET: 'cron-secret',
+    WHATSAPP_API_BASE: `http://127.0.0.1:${typeof fa === 'object' && fa ? fa.port : 0}/v19.0`,
+    WHATSAPP_TOKEN: 'test-token',
+    WHATSAPP_PHONE_NUMBER_ID: 'PHONE1',
+    WHATSAPP_WABA_ID: 'WABA1',
+  });
+  delete process.env.DATABASE_URL;
+  L = await import('../src/lib/leads');
+  T = await import('../src/lib/templates');
+  W = await import('../src/server/whatsapp');
+  S = await import('../src/server/sender');
+  ST = await import('../src/server/store');
+  const { app } = await import('../src/server/app');
+  server = app.listen(0);
+  await new Promise((r) => server.once('listening', r));
+  const a = server.address();
+  base = `http://127.0.0.1:${typeof a === 'object' && a ? a.port : 0}`;
+  const login = await call('POST', '/api/auth/login', { email: 'owner@example.test', password: 'owner-test-password' });
+  cookie = login.cookie!;
+});
+after(() => {
+  server.close();
+  fake.close();
+  fs.rmSync(dataDir, { recursive: true, force: true });
+});
+
+async function call(method: string, url: string, body?: unknown, withCookie = true, headers: Record<string, string> = {}) {
+  const res = await fetch(base + url, {
+    method,
+    headers: { ...(body ? { 'Content-Type': 'application/json' } : {}), ...(withCookie && cookie ? { Cookie: cookie } : {}), ...headers },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const setCookie = res.headers.get('set-cookie');
+  return { status: res.status, json: (await res.json()) as Record<string, any>, cookie: setCookie ? setCookie.split(';')[0] : undefined };
+}
+
+/* --------------------------------- pure logic --------------------------------- */
+
+test('phone numbers: Indian 10-digit gets +91, international kept, junk rejected', () => {
+  assert.equal(L.normalizePhone('98765 43210'), '919876543210');
+  assert.equal(L.normalizePhone('+91-98765-43210'), '919876543210');
+  assert.equal(L.normalizePhone('09876543210'), '919876543210');
+  assert.equal(L.normalizePhone('+44 7700 900123'), '447700900123');
+  assert.equal(L.normalizePhone('0044 7700 900123'), '447700900123');
+  assert.equal(L.normalizePhone('12345'), null);
+  assert.equal(L.normalizePhone('5876543210'), null); // 10 digits not starting 6-9
+});
+
+test('tags are normalised and filtered with any / all', () => {
+  assert.deepEqual(L.normalizeTags('VIP, vip , #Follow  Up,,'), ['vip', 'follow up']);
+  const lead = (id: string, tags: string[]) => ({ id, name: id, phone: '91', tags, status: 'new' as const, source: '', notes: '', opted_in_at: null, created_at: '', updated_at: '' });
+  const ls = [lead('a', ['vip', 'diwali']), lead('b', ['vip']), lead('c', ['diwali'])];
+  assert.deepEqual(L.filterLeads(ls, { tags: ['vip', 'diwali'], tagMode: 'all' }).map((l) => l.id), ['a']);
+  assert.deepEqual(L.filterLeads(ls, { tags: ['vip', 'diwali'], tagMode: 'any' }).map((l) => l.id), ['a', 'b', 'c']);
+});
+
+test('CSV import: header detection, quoted tags, invalid rows reported', () => {
+  const rows = L.parseCsv('Name,Mobile,Tags\n"Sharma, R",98765 43210,"vip|camp"\nBad,123,\n,9811122233,\n');
+  const r = L.rowsToLeads(rows);
+  assert.equal(r.leads.length, 2);
+  assert.deepEqual(r.leads[0], { name: 'Sharma, R', phone: '919876543210', tags: ['vip', 'camp'], notes: '' });
+  assert.equal(r.leads[1].name, '+91 98111 22233');
+  assert.deepEqual(r.invalid, [3]);
+  // no header: name, phone, tags
+  assert.equal(L.rowsToLeads(L.parseCsv('Asha,9876500000,new')).leads[0].tags[0], 'new');
+});
+
+test('template variables: header, body, URL button, named params, media header', () => {
+  const [appt, offer] = TEMPLATES;
+  assert.deepEqual(T.templateVariables(appt).map((v) => v.key), ['header.1', 'body.1', 'body.2', 'body.3', 'button.0.1']);
+  assert.equal(T.templateVariables(appt)[2].example, 'Clinic');
+  assert.deepEqual(T.templateVariables(offer).map((v) => v.key), ['body.customer_name', 'body.offer']);
+  assert.equal(T.mediaHeader(offer), 'image');
+  const m = T.defaultMapping(appt);
+  assert.equal(m['body.1'].kind, 'first_name');
+  assert.deepEqual(m['body.2'], { kind: 'text', text: 'Clinic' });
+});
+
+test('payload matches the WhatsApp Cloud API template format', () => {
+  const [appt, offer] = TEMPLATES;
+  const lead = { name: 'Priya Sharma', phone: '919876543210' };
+  const p = T.buildTemplatePayload(appt, { ...T.defaultMapping(appt), 'body.3': { kind: 'text', text: 'Mon 10am' }, 'button.0.1': { kind: 'text', text: 'X9' } }, lead, null) as any;
+  assert.equal(p.to, '919876543210');
+  assert.equal(p.type, 'template');
+  assert.deepEqual(p.template.language, { code: 'en' });
+  assert.deepEqual(p.template.components, [
+    { type: 'header', parameters: [{ type: 'text', text: 'Priya' }] },
+    { type: 'body', parameters: [{ type: 'text', text: 'Priya' }, { type: 'text', text: 'Clinic' }, { type: 'text', text: 'Mon 10am' }] },
+    { type: 'button', sub_type: 'url', index: '0', parameters: [{ type: 'text', text: 'X9' }] },
+  ]);
+  const n = T.buildTemplatePayload(offer, { 'body.customer_name': { kind: 'name' }, 'body.offer': { kind: 'text', text: '20% off' } }, lead, 'https://x.test/a.jpg') as any;
+  assert.deepEqual(n.template.components[0], { type: 'header', parameters: [{ type: 'image', image: { link: 'https://x.test/a.jpg' } }] });
+  assert.deepEqual(n.template.components[1].parameters[0], { type: 'text', text: 'Priya Sharma', parameter_name: 'customer_name' });
+  assert.equal(T.renderPreview(offer, { 'body.customer_name': { kind: 'first_name' }, 'body.offer': { kind: 'text', text: '20% off' } }, lead).body, 'Namaste Priya, 20% off sirf aaj!');
+});
+
+test('mapping problems: empty text and missing media link', () => {
+  const [, offer] = TEMPLATES;
+  const p = T.mappingProblems(offer, { 'body.customer_name': { kind: 'first_name' }, 'body.offer': { kind: 'text', text: ' ' } }, null);
+  assert.equal(p.length, 2);
+});
+
+test('template list formats from different gateways are understood', () => {
+  assert.equal(W.extractTemplates({ data: TEMPLATES }).length, 3);
+  assert.equal(W.extractTemplates({ data: { data: TEMPLATES } }).length, 3);
+  assert.equal(W.extractTemplates(TEMPLATES).length, 3);
+  assert.equal(W.extractTemplates({ success: false }).length, 0);
+});
+
+/* ----------------------------------- server ----------------------------------- */
+
+test('everything needs a login', async () => {
+  for (const [m, u] of [['GET', '/api/state'], ['POST', '/api/leads'], ['GET', '/api/templates'], ['POST', '/api/campaigns'], ['POST', '/api/send-due']]) {
+    assert.equal((await call(m, u, m === 'POST' ? {} : undefined, false)).status, 401, `${m} ${u}`);
+  }
+  assert.equal((await call('POST', '/api/auth/login', { email: 'owner@example.test', password: 'x' }, false)).status, 401);
+  assert.equal((await call('GET', '/api/cron/send-due', undefined, false)).status, 401);
+});
+
+test('leads: add, duplicate number refused, edit, import merges tags', async () => {
+  const a = await call('POST', '/api/leads', { name: 'Priya', phone: '98765 43210', tags: 'VIP, follow up', opted_in: true });
+  assert.equal(a.status, 200);
+  assert.deepEqual(a.json.lead.tags, ['vip', 'follow up']);
+  assert.ok(a.json.lead.opted_in_at);
+  assert.equal((await call('POST', '/api/leads', { name: 'Dup', phone: '+91 98765 43210' })).status, 400);
+  assert.equal((await call('POST', '/api/leads', { name: 'X', phone: '123' })).status, 400);
+  const e = await call('PATCH', `/api/leads/${a.json.lead.id}`, { status: 'interested' });
+  assert.equal(e.json.lead.status, 'interested');
+  const imp = await call('POST', '/api/leads/import', {
+    rows: [{ name: 'Priya again', phone: '9876543210', tags: ['camp'] }, { name: 'Rahul', phone: '9811122233', tags: [] }, { name: 'Bad', phone: '1' }, { name: 'NoOpt', phone: '9811100000' }],
+    tags: ['nov'], opted_in: false,
+  });
+  assert.deepEqual(imp.json, { created: 2, updated: 1, invalid: 1 });
+  const st = await call('GET', '/api/state');
+  const priya = st.json.leads.find((l: any) => l.phone === '919876543210');
+  assert.equal(priya.name, 'Priya'); // existing details kept
+  assert.deepEqual(priya.tags, ['vip', 'follow up', 'camp', 'nov']);
+  const rahul = st.json.leads.find((l: any) => l.name === 'Rahul');
+  await call('POST', '/api/leads/bulk', { ids: [rahul.id], opted_in: true, add_tags: ['vip'] });
+  const st2 = await call('GET', '/api/state');
+  assert.ok(st2.json.leads.find((l: any) => l.name === 'Rahul').opted_in_at);
+});
+
+test('templates come from the WhatsApp API', async () => {
+  const r = await call('GET', '/api/templates?refresh=1');
+  assert.equal(r.status, 200);
+  assert.equal(r.json.templates.length, 3);
+});
+
+test('campaign: only approved templates, only opted-in leads; sender sends once and records results', async () => {
+  const st = await call('GET', '/api/state');
+  const ids = st.json.leads.map((l: any) => l.id);
+  const soon = new Date(Date.now() + 60_000).toISOString();
+  const mapping = { 'header.1': { kind: 'first_name' }, 'body.1': { kind: 'first_name' }, 'body.2': { kind: 'text', text: 'Dr A Clinic' }, 'body.3': { kind: 'text', text: 'Monday' }, 'button.0.1': { kind: 'text', text: 'abc' } };
+
+  const pending = await call('POST', '/api/campaigns', { template_name: 'draft_one', template_language: 'en', mapping: {}, send_at: soon, lead_ids: ids });
+  assert.equal(pending.status, 400);
+  const empty = await call('POST', '/api/campaigns', { template_name: 'appointment_reminder', template_language: 'en', mapping: { ...mapping, 'body.2': { kind: 'text', text: '' } }, send_at: soon, lead_ids: ids });
+  assert.equal(empty.status, 400);
+
+  const c = await call('POST', '/api/campaigns', { template_name: 'appointment_reminder', template_language: 'en', mapping, send_at: soon, lead_ids: ids });
+  assert.equal(c.status, 200, JSON.stringify(c.json));
+  assert.equal(c.json.scheduled, 2); // Priya + Rahul opted in; NoOpt skipped
+  assert.equal(c.json.skipped_not_opted_in, 1);
+
+  const store = await ST.getStore();
+  // Not due yet
+  assert.deepEqual(await S.runDue(store, W.sendMessage, new Date()), { sent: 0, failed: 0, more: false });
+  // Due: one succeeds, one fails at WhatsApp
+  failNext = true;
+  const r = await S.runDue(store, W.sendMessage, new Date(Date.now() + 120_000));
+  assert.equal(r.sent + r.failed, 2);
+  assert.equal(r.sent, 1);
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].template.name, 'appointment_reminder');
+  assert.match(sent[0].to, /^91\d{10}$/);
+  // Run again: nothing is sent twice
+  await S.runDue(store, W.sendMessage, new Date(Date.now() + 180_000));
+  assert.equal(sent.length, 1);
+
+  const st2 = await call('GET', '/api/state');
+  const msgs = st2.json.messages;
+  const ok = msgs.find((m: any) => m.status === 'sent');
+  const bad = msgs.find((m: any) => m.status === 'failed');
+  assert.equal(ok.wa_message_id, 'wamid.1');
+  assert.equal(bad.error, 'Recipient not on WhatsApp');
+  const lead = st2.json.leads.find((l: any) => l.id === ok.lead_id);
+  assert.notEqual(lead.status, 'new');
+
+  // Retry the failed one: it is sent now
+  assert.equal((await call('POST', `/api/messages/${bad.id}/retry`)).status, 200);
+  await new Promise((r) => setTimeout(r, 200));
+  assert.equal(sent.length, 2);
+});
+
+test('cancel, reschedule, opt-out cancels pending, late messages are not sent', async () => {
+  const st = await call('GET', '/api/state');
+  const priya = st.json.leads.find((l: any) => l.name === 'Priya');
+  const at = new Date(Date.now() + 3600_000).toISOString();
+  const mapping = { 'body.customer_name': { kind: 'first_name' }, 'body.offer': { kind: 'text', text: '10% off' } };
+  const c = await call('POST', '/api/campaigns', { template_name: 'offer_named', template_language: 'hi', mapping, header_media_url: 'https://x.test/a.jpg', send_at: at, lead_ids: [priya.id] });
+  assert.equal(c.status, 200, JSON.stringify(c.json));
+  const cid = c.json.campaign.id;
+  const later = new Date(Date.now() + 7200_000).toISOString();
+  assert.equal((await call('POST', `/api/campaigns/${cid}/reschedule`, { send_at: later })).json.rescheduled, 1);
+  await call('PATCH', `/api/leads/${priya.id}`, { opted_in: false });
+  const st2 = await call('GET', '/api/state');
+  assert.equal(st2.json.messages.find((m: any) => m.campaign_id === cid).status, 'cancelled');
+
+  // A message 2 days late is marked failed, not sent.
+  const store = await ST.getStore();
+  const before = sent.length;
+  await store.mutate((doc) => {
+    doc.messages.push({ id: 'old', campaign_id: cid, lead_id: priya.id, send_at: new Date(Date.now() - 2 * 86400_000).toISOString(), status: 'scheduled' });
+  });
+  await S.runDue(store, W.sendMessage);
+  assert.equal(sent.length, before);
+  const old = (await store.read()).messages.find((m) => m.id === 'old')!;
+  assert.equal(old.status, 'failed');
+});
+
+test('test send goes out immediately to the given number', async () => {
+  const before = sent.length;
+  const r = await call('POST', '/api/campaigns/test', {
+    template_name: 'offer_named', template_language: 'hi', header_media_url: 'https://x.test/a.jpg',
+    mapping: { 'body.customer_name': { kind: 'first_name' }, 'body.offer': { kind: 'text', text: 'Test offer' } }, phone: '9800000001', sample_name: 'Asha K',
+  });
+  assert.equal(r.status, 200, JSON.stringify(r.json));
+  assert.equal(sent.length, before + 1);
+  assert.equal(sent.at(-1).to, '919800000001');
+  assert.equal(sent.at(-1).template.components[1].parameters[0].text, 'Asha');
+});

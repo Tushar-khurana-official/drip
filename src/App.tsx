@@ -1,114 +1,126 @@
-import React, { useState } from 'react';
-import { AlertTriangle, Check, CloudOff, Droplets, LogOut, Settings, X } from 'lucide-react';
-import { CrmScreen } from './components/CrmScreen';
-import { useCrm } from './hooks/useCrm';
-import type { DripData } from './services/api';
+import React, { useCallback, useEffect, useState } from 'react';
+import { AlertTriangle, CalendarClock, FileText, LogOut, Pencil, Users } from 'lucide-react';
+import { api, type AppState } from './services/api';
+import { LeadsPage } from './components/LeadsPage';
+import { CampaignsPage } from './components/CampaignsPage';
+import { TemplatesPage } from './components/TemplatesPage';
+import { CampaignComposer } from './components/CampaignComposer';
+import { Toast } from './components/ui';
 
-interface AppProps {
-  initial: DripData;
-  storagePersistent: boolean;
-  onLogout: () => void;
-}
+type Tab = 'leads' | 'campaigns' | 'templates';
 
-export default function App({ initial, storagePersistent, onLogout }: AppProps) {
-  const crm = useCrm(initial);
-  const [settingsOpen, setSettingsOpen] = useState(!initial.profile.owner && !initial.leads.length);
+export default function App({ initial, onLogout }: { initial: AppState; onLogout: () => void }) {
+  const [state, setState] = useState(initial);
+  const [tab, setTab] = useState<Tab>('leads');
+  const [composeFor, setComposeFor] = useState<string[] | null>(null);
+  const [toast, setToast] = useState<string | null>(null);
 
-  const status = {
-    saved: { icon: Check, text: 'Saved', cls: 'text-emerald-200' },
-    pending: { icon: Check, text: 'Saving...', cls: 'text-emerald-200' },
-    saving: { icon: Check, text: 'Saving...', cls: 'text-emerald-200' },
-    error: { icon: CloudOff, text: 'Save nahi hua, dobara try ho raha hai', cls: 'text-amber-300' },
-  }[crm.saveStatus];
-  const StatusIcon = status.icon;
+  const refresh = useCallback(async () => setState(await api.state()), []);
+
+  // Pick up messages the server has sent in the meantime.
+  useEffect(() => {
+    const id = window.setInterval(() => refresh().catch(() => undefined), 30_000);
+    return () => window.clearInterval(id);
+  }, [refresh]);
+
+  const scheduled = state.messages.filter((m) => m.status === 'scheduled').length;
+  const tabs: Array<{ id: Tab; label: string; icon: React.ElementType; badge?: number }> = [
+    { id: 'leads', label: 'Leads', icon: Users, badge: state.leads.length },
+    { id: 'campaigns', label: 'Campaigns', icon: CalendarClock, badge: scheduled || undefined },
+    { id: 'templates', label: 'Templates', icon: FileText },
+  ];
+
+  const renameBusiness = async () => {
+    const name = prompt('Business name', state.settings.name)?.trim();
+    if (!name) return;
+    await api.saveSettings(name);
+    await refresh();
+  };
 
   return (
     <div className="min-h-screen flex flex-col">
-      <header className="sticky top-0 z-30 bg-[#0B3D2E] text-white">
-        <div className="max-w-5xl mx-auto px-4 h-16 flex items-center gap-3">
-          <div className="w-9 h-9 rounded-xl bg-white/10 flex items-center justify-center shrink-0">
-            <Droplets className="w-5 h-5 text-[#25D366]" />
-          </div>
-          <div className="min-w-0 flex-1">
-            <p className="text-sm font-extrabold truncate">{crm.profile.name}</p>
-            <p className={`text-[11px] flex items-center gap-1 ${status.cls}`}>
-              <StatusIcon className="w-3 h-3" /> {status.text}
-            </p>
-          </div>
-          <button onClick={() => setSettingsOpen(true)} className="p-2 rounded-xl hover:bg-white/10" aria-label="Settings">
-            <Settings className="w-5 h-5" />
+      <header className="sticky top-0 z-30 bg-white/90 backdrop-blur border-b border-slate-200">
+        <div className="max-w-6xl mx-auto px-4 h-14 flex items-center gap-3">
+          <div className="w-8 h-8 rounded-lg bg-indigo-600 flex items-center justify-center text-white font-black text-sm">D</div>
+          <button className="min-w-0 flex items-center gap-1.5 group" onClick={renameBusiness} title="Rename">
+            <span className="font-bold text-slate-900 truncate">{state.settings.name}</span>
+            <Pencil className="w-3.5 h-3.5 text-slate-400 opacity-0 group-hover:opacity-100" />
           </button>
-          <button
-            onClick={() => {
-              if (crm.saveStatus === 'saved' || confirm('Kuch badlav abhi save nahi hue. Phir bhi logout karein?')) onLogout();
-            }}
-            className="p-2 rounded-xl hover:bg-white/10"
-            aria-label="Logout"
-          >
-            <LogOut className="w-5 h-5" />
+          <nav className="ml-auto hidden sm:flex gap-1">
+            {tabs.map((t) => (
+              <TabButton key={t.id} {...t} active={tab === t.id} onClick={() => setTab(t.id)} />
+            ))}
+          </nav>
+          <button onClick={onLogout} className="ml-auto sm:ml-2 p-2 rounded-lg hover:bg-slate-100" aria-label="Log out">
+            <LogOut className="w-5 h-5 text-slate-600" />
           </button>
         </div>
+        <nav className="sm:hidden flex border-t border-slate-100">
+          {tabs.map((t) => (
+            <TabButton key={t.id} {...t} active={tab === t.id} onClick={() => setTab(t.id)} mobile />
+          ))}
+        </nav>
       </header>
 
-      {!storagePersistent && (
-        <div className="max-w-5xl w-full mx-auto px-4 pt-4">
-          <p className="text-xs p-3 rounded-2xl bg-amber-50 border border-amber-200 text-amber-900 flex items-start gap-2">
-            <AlertTriangle className="w-4 h-4 shrink-0" />
-            Data temporary storage mein hai aur mit sakta hai. Server par DATABASE_URL (Postgres) set karein.
-          </p>
-        </div>
-      )}
+      <main className="flex-1 w-full max-w-6xl mx-auto px-4 py-5 space-y-4">
+        {(!state.whatsapp.sending || !state.whatsapp.templates || !state.storage_persistent) && (
+          <div className="p-3 rounded-xl bg-amber-50 border border-amber-200 text-sm text-amber-900 flex gap-2">
+            <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+            <div className="space-y-0.5">
+              {!state.whatsapp.sending && <p>Sending is off: set WHATSAPP_TOKEN and WHATSAPP_PHONE_NUMBER_ID on the server.</p>}
+              {!state.whatsapp.templates && <p>Templates are off: set WHATSAPP_WABA_ID (WhatsApp Business Account ID) on the server.</p>}
+              {!state.storage_persistent && <p>Data is in temporary storage and can be lost. Set DATABASE_URL (Postgres).</p>}
+            </div>
+          </div>
+        )}
 
-      <main className="flex-1 w-full px-3 sm:px-6 py-4 lg:py-6">
-        <CrmScreen profile={crm.profile} crm={crm} />
+        {tab === 'leads' && (
+          <LeadsPage leads={state.leads} messages={state.messages} onChanged={refresh} onToast={setToast} onSendTemplate={(ids) => setComposeFor(ids)} />
+        )}
+        {tab === 'campaigns' && (
+          <CampaignsPage
+            campaigns={state.campaigns}
+            messages={state.messages}
+            leads={state.leads}
+            sendingEnabled={state.whatsapp.sending}
+            onChanged={refresh}
+            onToast={setToast}
+            onNew={() => setComposeFor([])}
+          />
+        )}
+        {tab === 'templates' && <TemplatesPage enabled={state.whatsapp.templates} />}
       </main>
 
-      {settingsOpen && <SettingsModal crm={crm} onClose={() => setSettingsOpen(false)} />}
+      {composeFor && (
+        <CampaignComposer
+          leads={state.leads}
+          initialLeadIds={composeFor}
+          templatesEnabled={state.whatsapp.templates}
+          onClose={() => setComposeFor(null)}
+          onDone={async (msg) => {
+            setComposeFor(null);
+            setToast(msg);
+            await refresh();
+            if (!msg.startsWith('Test')) setTab('campaigns');
+          }}
+        />
+      )}
+      {toast && <Toast text={toast} onDone={() => setToast(null)} />}
     </div>
   );
 }
 
-function SettingsModal({ crm, onClose }: { crm: ReturnType<typeof useCrm>; onClose: () => void }) {
-  const [form, setForm] = useState(crm.profile);
-  const input = 'w-full px-3 py-2.5 rounded-xl border border-emerald-100 bg-[#F8FCFA] text-sm';
+function TabButton({ label, icon: Icon, badge, active, onClick, mobile }: { label: string; icon: React.ElementType; badge?: number; active: boolean; onClick: () => void; mobile?: boolean }) {
   return (
-    <div className="fixed inset-0 z-50 bg-black/40 flex items-end sm:items-center justify-center" onClick={onClose}>
-      <div className="bg-white w-full sm:max-w-md rounded-t-3xl sm:rounded-3xl p-5 space-y-3" onClick={(e) => e.stopPropagation()}>
-        <div className="flex items-center justify-between">
-          <h3 className="text-base font-extrabold text-[#123D31]">Business details</h3>
-          <button onClick={onClose} aria-label="Close">
-            <X className="w-5 h-5 text-[#5F7A6E]" />
-          </button>
-        </div>
-        <p className="text-[11px] text-[#5F7A6E]">Templates mein {'{shop}'}, {'{owner}'} aur {'{upi}'} ki jagah yeh bhara jayega.</p>
-        <label className="block">
-          <span className="text-[11px] font-bold text-[#5F7A6E]">Business ka naam {'{shop}'}</span>
-          <input className={input} value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
-        </label>
-        <label className="block">
-          <span className="text-[11px] font-bold text-[#5F7A6E]">Aapka naam {'{owner}'}</span>
-          <input className={input} value={form.owner} onChange={(e) => setForm({ ...form, owner: e.target.value })} />
-        </label>
-        <label className="block">
-          <span className="text-[11px] font-bold text-[#5F7A6E]">UPI ID {'{upi}'}</span>
-          <input className={input} value={form.upi_id} onChange={(e) => setForm({ ...form, upi_id: e.target.value })} placeholder="naam@okaxis" />
-        </label>
-        <div className="flex justify-between items-center pt-2">
-          <button onClick={crm.restoreDefaultTemplates} className="text-xs font-bold text-[#1F7A5C]">
-            Starter templates wapas laayein
-          </button>
-          <button
-            disabled={!form.name.trim()}
-            onClick={() => {
-              crm.setProfile({ name: form.name.trim(), owner: form.owner.trim(), upi_id: form.upi_id.trim() });
-              onClose();
-            }}
-            className="px-4 py-2.5 rounded-xl bg-[#25D366] text-[#0B3D2E] font-extrabold text-xs disabled:opacity-40"
-          >
-            Save
-          </button>
-        </div>
-      </div>
-    </div>
+    <button
+      onClick={onClick}
+      className={`${mobile ? 'flex-1 justify-center py-2.5' : 'px-3 py-1.5 rounded-lg'} flex items-center gap-1.5 text-sm font-semibold transition ${
+        active ? (mobile ? 'text-indigo-700 border-b-2 border-indigo-600' : 'bg-indigo-50 text-indigo-700') : 'text-slate-600 hover:text-slate-900'
+      }`}
+    >
+      <Icon className="w-4 h-4" />
+      {label}
+      {badge !== undefined && <span className="text-xs px-1.5 rounded-full bg-slate-100 text-slate-600">{badge}</span>}
+    </button>
   );
 }

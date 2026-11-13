@@ -30,5 +30,6 @@
     "@types/react-dom": "^19.3.0",
     "tailwindcss": "^4.3.3",
     "typescript": "^7.0.2"
-  }
+  },
+  "description": "Leads CRM with tags and scheduled WhatsApp template messages"
 }

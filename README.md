@@ -1,67 +1,75 @@
-# Drip
+# Drip CRM
 
-A small CRM for following up with leads on WhatsApp: add leads, tag them, pick a message template and
-choose when it goes out. Hinglish interface, works on phone and desktop.
-
-The code started as the Leads CRM in Dukaan Saathi and runs here as its own app for one business.
+A small CRM for WhatsApp follow-ups: keep a list of leads, tag them, pick an approved WhatsApp template,
+fill in its variables and schedule when it goes out. The server sends each message at its time through the
+WhatsApp API (Meta Cloud API format, via the provider's gateway).
 
 ## What it does
 
-| Step | How |
+| | |
 | --- | --- |
-| Add a lead | "Naya lead": name, WhatsApp number, source, note, tags. A number is saved only with the consent tick ("is vyakti ne message lene ke liye haan kaha hai"). |
-| Tag leads | Type tags in the form (Enter or comma), tap "+ tag" on any lead, or select many leads and use "Tag lagayein / Tag hatayein". Tap tags at the top to filter (several tags = leads with all of them). Each lead also has a status: Naya, Baat hui, Interested, Grahak bana, Nahi chahiye. |
-| Templates | "Templates" tab: four starter templates, add or edit your own. `{name}`, `{shop}`, `{owner}`, `{upi}` are filled per lead, with a live preview. `{shop}`, `{owner}` and `{upi}` come from Settings (gear icon). |
-| Schedule | Pick one lead ("Schedule") or select many → "Template schedule karein" → choose the template → choose the time (quick picks like "Kal subah 10 baje", or any date and time). One message per lead; leads without number/consent are skipped and shown. |
-| Sending | **Default:** at the chosen time the message moves to "Abhi bhejein" (optional browser notification); one tap opens WhatsApp with the text filled in and you tap send. **Automatic:** set `WHATSAPP_TOKEN` and `WHATSAPP_PHONE_NUMBER_ID` (WhatsApp Cloud API) and the server sends at the time by itself. |
-| Track | "Scheduled" tab: due now, upcoming (change time or cancel), history (sent / failed / cancelled). A lead becomes "Baat hui" after its first message goes out. |
+| **Leads** | Add one by one or import a CSV (`name, phone, tags, notes`; header row optional). Indian 10-digit numbers get +91; other numbers need their country code. Duplicate numbers are merged, not repeated. Each lead has a status (new, contacted, interested, converted, lost), source, notes and an opt-in date. |
+| **Tags** | Add tags in the lead form, remove them with the × on a lead, or add/remove a tag on many selected leads at once. Click tags to filter (match any or all). |
+| **Templates** | Loaded live from the WhatsApp Business Account: approved, pending and rejected, with a preview. Only approved templates can be sent. |
+| **Campaigns** | Select leads (or choose tags) → *Send template* → choose a template → map each variable (`{{1}}`, named params, URL button params) to the lead's first name, full name, phone, or fixed text → add the media link if the header is an image/video/document → choose the time → *Schedule*. *Send test* sends it to your own number first. |
+| **Tracking** | Each campaign shows scheduled / sent / failed / cancelled per lead, with WhatsApp's error message when one fails. Change the time or cancel what is still scheduled; retry failed messages. A lead moves from *new* to *contacted* once a message is sent. |
+
+Messages are only scheduled for leads marked as opted in. Opting a lead out cancels their pending messages.
 
 ## Run it
 
 ```bash
 npm install
-cp .env.example .env      # set APP_EMAIL, APP_PASSWORD and SESSION_SECRET
+cp .env.example .env      # fill in login + WhatsApp settings
 npm run dev               # http://localhost:3000
 ```
 
-| Command | What it does |
+| Command | |
 | --- | --- |
-| `npm run dev` | Express server + Vite dev server |
-| `npm run build` then `npm start` | Production build served by the same server |
-| `npm test` | Tags, templates, scheduling, login, one-time sending, upload checks |
+| `npm run dev` | API + Vite dev server; sends due messages every 30 s |
+| `npm run build`, then `npm start` | Production build on a Node server (same 30 s sender) |
+| `npm test` | Leads, CSV, tags, template variables and payloads, login, campaigns, sending (against a fake WhatsApp API) |
 | `npm run lint` | TypeScript check |
 
-Data is saved on the server: Postgres when `DATABASE_URL` is set, otherwise `./data/drip.json` (git-ignored;
-it contains names and phone numbers). The browser saves a second after every change.
+## WhatsApp settings
 
-## Automatic sending
+| Variable | What |
+| --- | --- |
+| `WHATSAPP_API_BASE` | `https://crmapi.setu360.com/api/meta/v19.0` |
+| `WHATSAPP_TOKEN` | Gateway token, sent as `Authorization: Bearer …` |
+| `WHATSAPP_PHONE_NUMBER_ID` | The sending number's ID (messages: `POST {base}/{id}/messages`) |
+| `WHATSAPP_WABA_ID` | The WhatsApp Business Account ID (templates: `GET {base}/{waba}/message_templates?json=true`) |
 
-- `npm start` / `npm run dev`: the server checks for due messages every minute by itself.
-- Vercel: call `GET /api/cron/send-due` every minute with `Authorization: Bearer $CRON_SECRET` (Vercel Cron on
-  a Pro plan, or any external cron service; Hobby plans only allow daily cron jobs).
-- WhatsApp only allows free text to people who messaged the business in the last 24 hours. For everyone else,
-  create a template in Meta Business Manager, get it approved, and enter its name and language on the template
-  in the app ("WhatsApp approved template"); `{{1}}` in it is filled with the lead's first name.
-- Each message is written to a separate send log before it is sent, so it is never sent twice (two cron runs,
-  or a browser uploading an older copy). Messages more than 24 hours late are not sent automatically; you can
-  still send them by hand.
+The phone-number ID and the Business Account ID are different numbers. Using the phone-number ID for
+templates gives *"request node (waba_id) does not match"*.
+
+## How sending works
+
+- Every 30 seconds (or on each cron call) the server takes due messages, marks them *sending* in one atomic
+  step, sends them, and records *sent* (with WhatsApp's message id) or *failed* (with the reason). Two runs can
+  never send the same message.
+- A message interrupted mid-send is marked failed after 15 minutes, never resent automatically.
+- Messages more than 24 hours late (server was down) are marked failed instead of being sent late.
+- Delivered / read receipts need the WhatsApp webhook, which currently points at the provider; not shown yet.
 - Logs contain counts only, never names, numbers or message text.
 
 ## Deploy on Vercel
 
 1. Storage → create a Neon (Postgres) database and connect it (sets `DATABASE_URL`).
-2. Environment variables: `APP_EMAIL`, `APP_PASSWORD`, `SESSION_SECRET`; for automatic sending also
-   `WHATSAPP_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID`, `CRON_SECRET`.
-3. Deploy. Without `DATABASE_URL` the app shows a warning: data in `/tmp` is lost on cold starts.
+2. Set the environment variables from `.env.example`.
+3. Scheduling: Vercel functions don't run in the background, so something must call
+   `GET /api/cron/send-due` with `Authorization: Bearer $CRON_SECRET` every minute — Vercel Cron on a Pro plan,
+   or a free external cron service. (A normal Node host with `npm start` needs none of this.)
 
 ## Code
 
-| Path | What |
+| Path | |
 | --- | --- |
-| `src/lib/crm.ts` | Tags, templates, scheduling rules (pure functions) |
-| `src/hooks/useCrm.ts` | Browser state, saving, picking up server send results |
-| `src/components/CrmScreen.tsx` | Leads, Templates and Scheduled screens |
-| `src/server/app.ts` | Login and data API |
-| `src/server/crm.ts` | Send status, cron endpoint, WhatsApp Cloud API |
-| `src/server/store.ts` | Postgres or JSON file storage, send log |
-| `tests/crm.test.ts` | Tests |
+| `src/lib/leads.ts` | Phone numbers, tags, filters, CSV |
+| `src/lib/templates.ts` | Template variables, payload for the WhatsApp API, preview |
+| `src/server/whatsapp.ts` | WhatsApp API client (templates, send) |
+| `src/server/sender.ts` | Scheduled sending |
+| `src/server/app.ts` | API routes |
+| `src/server/store.ts` | Postgres or JSON-file storage (atomic updates) |
+| `src/components/` | Leads, campaign composer, campaigns, templates |
+| `tests/drip.test.ts` | Tests |

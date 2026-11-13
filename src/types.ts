@@ -1,63 +1,98 @@
-/** Drip data model. Everything belongs to one business (the app is single-tenant). */
-
-/** The business sending the messages. Used for {shop}, {owner} and {upi} in templates. */
-export interface BusinessProfile {
-  name: string;
-  owner: string;
-  upi_id: string;
-}
-
-/* --------------------------------- CRM --------------------------------- */
+/** Drip data model. One Drip instance = one business and one WhatsApp number. */
 
 export type LeadStatus = 'new' | 'contacted' | 'interested' | 'converted' | 'lost';
 
-/** A prospective customer the shop wants to follow up with. Phone needs consent, like Customer. */
 export interface Lead {
   id: string;
-  shop_id: string;
   name: string;
+  /** Digits with country code, e.g. "919876543210". */
   phone: string;
-  /** When the lead agreed to get WhatsApp messages from the shop; null = no messages may be scheduled. */
-  consent_given_at: string | null;
   /** Lowercase, trimmed, unique. */
   tags: string[];
   status: LeadStatus;
   source: string;
-  note: string;
+  notes: string;
+  /** When the lead agreed to receive WhatsApp messages. Messages are only scheduled for opted-in leads. */
+  opted_in_at: string | null;
   created_at: string;
+  updated_at: string;
 }
 
-/** A reusable message. Placeholders: {name}, {shop}, {owner}, {upi}. */
-export interface MessageTemplate {
-  id: string;
-  shop_id: string;
-  name: string;
-  body: string;
-  /**
-   * Optional: name of a Meta-approved WhatsApp template. Only used when the server sends automatically
-   * through the WhatsApp Cloud API ({{1}} in that template is filled with the lead's name).
-   */
-  wa_template_name?: string;
-  wa_language?: string;
-  created_at: string;
-}
+/* ------------------------- WhatsApp templates (Meta) ------------------------- */
 
-export type ScheduledStatus = 'scheduled' | 'sent' | 'failed' | 'cancelled';
-
-/** One template, to one lead, at one time. */
-export interface ScheduledMessage {
-  id: string;
-  shop_id: string;
-  lead_id: string;
-  template_id: string;
-  /** ISO time the message should go out. */
-  send_at: string;
-  status: ScheduledStatus;
-  /** 'link' = owner opened WhatsApp and tapped send; 'api' = sent by the server through WhatsApp Cloud API. */
-  sent_via?: 'link' | 'api';
-  sent_at?: string;
-  /** Exact text that was sent (filled in when it goes out). */
+export interface WaButton {
+  type: string; // QUICK_REPLY | URL | PHONE_NUMBER | COPY_CODE | ...
   text?: string;
-  error?: string;
+  url?: string;
+  phone_number?: string;
+}
+
+export interface WaComponent {
+  type: 'HEADER' | 'BODY' | 'FOOTER' | 'BUTTONS' | string;
+  format?: 'TEXT' | 'IMAGE' | 'VIDEO' | 'DOCUMENT' | 'LOCATION' | string;
+  text?: string;
+  buttons?: WaButton[];
+  example?: Record<string, unknown>;
+}
+
+/** A message template as the WhatsApp API returns it. */
+export interface WaTemplate {
+  id?: string;
+  name: string;
+  language: string;
+  status: string; // APPROVED | PENDING | REJECTED | PAUSED | ...
+  category?: string;
+  parameter_format?: 'POSITIONAL' | 'NAMED' | string;
+  components: WaComponent[];
+}
+
+/* ------------------------------ campaigns ------------------------------ */
+
+/** Where a template variable's value comes from. */
+export type VarSource =
+  | { kind: 'name' }
+  | { kind: 'first_name' }
+  | { kind: 'phone' }
+  | { kind: 'text'; text: string };
+
+/** A template sent to a set of leads at one time. */
+export interface Campaign {
+  id: string;
+  name: string;
+  /** Snapshot of the template when the campaign was created. */
+  template: WaTemplate;
+  /** Variable key (see templateVariables) -> value source. */
+  mapping: Record<string, VarSource>;
+  /** Link to the image / video / document when the template header is media. */
+  header_media_url: string | null;
+  send_at: string;
   created_at: string;
+}
+
+export type MessageStatus = 'scheduled' | 'sending' | 'sent' | 'failed' | 'cancelled';
+
+/** One template message to one lead. */
+export interface Message {
+  id: string;
+  campaign_id: string;
+  lead_id: string;
+  send_at: string;
+  status: MessageStatus;
+  /** When the server started / finished sending. */
+  claimed_at?: string;
+  sent_at?: string;
+  /** Message id returned by WhatsApp. */
+  wa_message_id?: string;
+  error?: string;
+}
+
+export interface BusinessSettings {
+  name: string;
+}
+
+export interface DripDoc {
+  settings: BusinessSettings;
+  leads: Lead[];
+  campaigns: Campaign[];
+  messages: Message[];
 }
