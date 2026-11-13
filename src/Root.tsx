@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { LogIn } from 'lucide-react';
 import App from './App';
-import { api, ApiError, type AppState } from './services/api';
+import { api, ApiError, apiMissing, type AppState } from './services/api';
 import { cls } from './components/ui';
 
 type View = { kind: 'loading' } | { kind: 'login'; error: string | null; configured: boolean } | { kind: 'app'; state: AppState };
@@ -19,9 +19,10 @@ export default function Root() {
     }
   }, []);
   useEffect(() => {
-    open();
+    if (!apiMissing) open();
   }, [open]);
 
+  if (apiMissing) return <SetupNeeded />;
   if (view.kind === 'loading') return <div className="min-h-screen flex items-center justify-center text-sm text-slate-500">Loading…</div>;
   if (view.kind === 'login') return <Login {...view} onLoggedIn={open} />;
   return (
@@ -77,6 +78,32 @@ function Login({ error, configured, onLoggedIn }: { error: string | null; config
           <LogIn className="w-4 h-4" /> {busy ? 'Signing in…' : 'Sign in'}
         </button>
       </form>
+    </div>
+  );
+}
+
+/** Shown on GitHub Pages when the site was built without VITE_API_URL: the page alone cannot run Drip. */
+function SetupNeeded() {
+  return (
+    <div className="min-h-screen flex items-center justify-center p-4">
+      <div className={`${cls.card} w-full max-w-lg p-6 space-y-3 text-sm text-slate-700`}>
+        <div className="flex items-center gap-2.5">
+          <div className="w-9 h-9 rounded-lg bg-indigo-600 flex items-center justify-center text-white font-black">D</div>
+          <h1 className="text-lg font-bold text-slate-900">Drip needs its server</h1>
+        </div>
+        <p>
+          This page is only the front end. Leads, the WhatsApp token and scheduled sending live on the Drip server, which GitHub Pages
+          cannot run.
+        </p>
+        <ol className="list-decimal pl-5 space-y-1">
+          <li>Deploy the repository on Vercel (or any Node host) and set its environment variables (see README).</li>
+          <li>
+            In GitHub → Settings → Secrets and variables → Actions → <b>Variables</b>, add <code>DRIP_API_URL</code> = the server address, e.g.{' '}
+            <code>https://drip.vercel.app</code>.
+          </li>
+          <li>Re-run the "Deploy to GitHub Pages" workflow.</li>
+        </ol>
+      </div>
     </div>
   );
 }

@@ -16,13 +16,42 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * Where the API lives. Empty = same server as this page (npm start / Vercel). Set VITE_API_URL at build time
+ * when the page is hosted elsewhere (GitHub Pages); login then uses a token kept in this browser.
+ */
+export const API_URL = String(import.meta.env.VITE_API_URL ?? '').replace(/\/+$/, '');
+const TOKEN_KEY = 'drip_token';
+/** Static hosting without an API configured: nothing can work, show the setup screen. */
+export const apiMissing = !API_URL && /\.github\.io$/.test(window.location.hostname);
+
+function token(): string | null {
+  try {
+    return API_URL ? localStorage.getItem(TOKEN_KEY) : null;
+  } catch {
+    return null;
+  }
+}
+function setToken(t: string | null) {
+  try {
+    if (t) localStorage.setItem(TOKEN_KEY, t);
+    else localStorage.removeItem(TOKEN_KEY);
+  } catch {
+    // private mode: login lasts until the page is closed
+  }
+}
+
 async function call<T>(method: string, url: string, body?: unknown): Promise<T> {
   let res: Response;
+  const t = token();
   try {
-    res = await fetch(url, {
+    res = await fetch(API_URL + url, {
       method,
-      credentials: 'same-origin',
-      headers: body !== undefined ? { 'Content-Type': 'application/json' } : undefined,
+      credentials: API_URL ? 'omit' : 'same-origin',
+      headers: {
+        ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
+        ...(t ? { Authorization: `Bearer ${t}` } : {}),
+      },
       body: body !== undefined ? JSON.stringify(body) : undefined,
     });
   } catch {
@@ -35,7 +64,10 @@ async function call<T>(method: string, url: string, body?: unknown): Promise<T> 
   } catch {
     throw new ApiError('The server did not answer properly.', res.status || 0);
   }
-  if (res.status === 401 && !url.startsWith('/api/auth/')) window.location.reload();
+  if (res.status === 401 && !url.startsWith('/api/auth/')) {
+    setToken(null);
+    window.location.reload();
+  }
   if (!res.ok) throw new ApiError(String(json.error ?? `Error ${res.status}`), res.status);
   return json as T;
 }
@@ -52,8 +84,15 @@ export interface CampaignInput {
 
 export const api = {
   me: () => call<{ loggedIn: boolean; loginConfigured: boolean }>('GET', '/api/auth/me'),
-  login: (email: string, password: string) => call('POST', '/api/auth/login', { email, password }),
-  logout: () => call('POST', '/api/auth/logout'),
+  login: async (email: string, password: string) => {
+    const r = await call<{ loggedIn: boolean; token?: string }>('POST', '/api/auth/login', { email, password });
+    if (API_URL && r.token) setToken(r.token);
+    return r;
+  },
+  logout: async () => {
+    setToken(null);
+    return call('POST', '/api/auth/logout');
+  },
   state: () => call<AppState>('GET', '/api/state'),
   saveSettings: (name: string) => call('PUT', '/api/settings', { name }),
 

@@ -32,6 +32,27 @@ app.disable('x-powered-by');
 app.set('trust proxy', true);
 app.use(express.json({ limit: '5mb' }));
 
+/**
+ * CORS for a front end hosted on another site (GitHub Pages). Only the origins in ALLOWED_ORIGINS may call
+ * the API from a browser; they log in with a bearer token, not a cookie, so no credentials are allowed.
+ */
+const allowedOrigins = (process.env.ALLOWED_ORIGINS ?? 'https://itsasoeternity.github.io')
+  .split(',')
+  .map((o) => o.trim().replace(/\/+$/, ''))
+  .filter(Boolean);
+app.use('/api', (req, res, next) => {
+  const origin = req.headers.origin;
+  if (origin && allowedOrigins.includes(origin)) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Vary', 'Origin');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
+    res.setHeader('Access-Control-Max-Age', '86400');
+  }
+  if (req.method === 'OPTIONS') return res.status(origin && allowedOrigins.includes(origin) ? 204 : 403).end();
+  next();
+});
+
 const id = (p: string) => `${p}_${crypto.randomBytes(8).toString('hex')}`;
 const str = (v: unknown, max = 200) => (typeof v === 'string' ? v.trim().slice(0, max) : '');
 function log(event: string, fields: Record<string, string | number | boolean | null> = {}) {
@@ -62,8 +83,10 @@ app.post('/api/auth/login', (req, res) => {
     return res.status(401).json({ error: 'Wrong email or password' });
   }
   resetLoginAttempts(key);
-  setSessionCookie(res, signSession());
-  return res.json({ loggedIn: true });
+  const token = signSession();
+  setSessionCookie(res, token);
+  // The token is also returned for front ends on another site (see CORS above).
+  return res.json({ loggedIn: true, token });
 });
 
 app.post('/api/auth/logout', (_req, res) => {

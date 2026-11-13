@@ -306,3 +306,19 @@ test('test send goes out immediately to the given number', async () => {
   assert.equal(sent.at(-1).to, '919800000001');
   assert.equal(sent.at(-1).template.components[1].parameters[0].text, 'Asha');
 });
+
+test('front end on GitHub Pages: bearer token login and CORS for allowed origins only', async () => {
+  const login = await call('POST', '/api/auth/login', { email: 'owner@example.test', password: 'owner-test-password' }, false);
+  assert.ok(login.json.token);
+  const withToken = await call('GET', '/api/state', undefined, false, { Authorization: `Bearer ${login.json.token}` });
+  assert.equal(withToken.status, 200);
+  assert.equal((await call('GET', '/api/state', undefined, false, { Authorization: 'Bearer forged.token' })).status, 401);
+
+  const pre = await fetch(base + '/api/state', { method: 'OPTIONS', headers: { Origin: 'https://itsasoeternity.github.io', 'Access-Control-Request-Headers': 'authorization' } });
+  assert.equal(pre.status, 204);
+  assert.equal(pre.headers.get('access-control-allow-origin'), 'https://itsasoeternity.github.io');
+  assert.match(pre.headers.get('access-control-allow-headers') ?? '', /Authorization/);
+  const evil = await fetch(base + '/api/state', { method: 'OPTIONS', headers: { Origin: 'https://evil.example' } });
+  assert.equal(evil.status, 403);
+  assert.equal(evil.headers.get('access-control-allow-origin'), null);
+});

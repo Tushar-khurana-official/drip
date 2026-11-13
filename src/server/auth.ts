@@ -70,7 +70,13 @@ function cookieValue(req: Request, name: string): string | undefined {
   return undefined;
 }
 
+/**
+ * Session from the cookie (app served by this server) or from "Authorization: Bearer <token>"
+ * (app hosted elsewhere, e.g. GitHub Pages, where cross-site cookies are blocked by browsers).
+ */
 export function getSession(req: Request): Session | null {
+  const auth = req.headers.authorization;
+  if (auth?.startsWith('Bearer ')) return readSession(auth.slice(7).trim());
   return readSession(cookieValue(req, COOKIE));
 }
 

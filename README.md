@@ -61,6 +61,22 @@ templates gives *"request node (waba_id) does not match"*.
    `GET /api/cron/send-due` with `Authorization: Bearer $CRON_SECRET` every minute — Vercel Cron on a Pro plan,
    or a free external cron service. (A normal Node host with `npm start` needs none of this.)
 
+## GitHub Pages (itsasoeternity.github.io/drip)
+
+GitHub Pages only hosts files, so it can show Drip's screens but cannot run the server (leads storage,
+the WhatsApp token, scheduled sending). Use it together with a server on Vercel or any Node host:
+
+1. Deploy the server (above) and note its address, e.g. `https://drip-xyz.vercel.app`.
+2. On that server set `ALLOWED_ORIGINS=https://itsasoeternity.github.io` (the default).
+3. GitHub → repo **Settings → Pages → Source: GitHub Actions** (one time).
+4. GitHub → **Settings → Secrets and variables → Actions → Variables → New variable**:
+   `DRIP_API_URL` = the server address.
+5. **Actions → Deploy to GitHub Pages → Run workflow** (it also runs on every push to `main`).
+
+Without `DRIP_API_URL` the page shows these steps instead of a blank screen. On Pages, login uses a token kept
+in the browser (cross-site cookies are blocked by browsers); only the origins in `ALLOWED_ORIGINS` can call
+the API. The simplest option is still to open the Vercel address directly: it serves the same app.
+
 ## Code
 
 | Path | |
