@@ -70,6 +70,11 @@ export async function fetchTemplates(force = false): Promise<WaTemplate[]> {
 
 export type Sender = (payload: Record<string, unknown>) => Promise<{ ok: boolean; id?: string; error?: string }>;
 
+/** Free-text message (only delivered within 24 hours of the lead's last message to us). */
+export function textPayload(to: string, body: string): Record<string, unknown> {
+  return { messaging_product: 'whatsapp', recipient_type: 'individual', to, type: 'text', text: { preview_url: false, body } };
+}
+
 export const sendMessage: Sender = async (payload) => {
   try {
     const r = await request('POST', `${base()}/${process.env.WHATSAPP_PHONE_NUMBER_ID}/messages`, payload);

@@ -10,7 +10,7 @@ import path from 'node:path';
 import type { DripDoc } from '../types.js';
 
 export function emptyDoc(): DripDoc {
-  return { settings: { name: 'My Business' }, leads: [], campaigns: [], messages: [] };
+  return { settings: { name: 'My Business' }, leads: [], campaigns: [], messages: [], chats: [] };
 }
 
 export interface Store {

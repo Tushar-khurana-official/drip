@@ -79,6 +79,7 @@ before(async () => {
     WHATSAPP_TOKEN: 'test-token',
     WHATSAPP_PHONE_NUMBER_ID: 'PHONE1',
     WHATSAPP_WABA_ID: 'WABA1',
+    WHATSAPP_WEBHOOK_KEY: 'hook-key',
   });
   delete process.env.DATABASE_URL;
   L = await import('../src/lib/leads');
@@ -321,4 +322,79 @@ test('front end on GitHub Pages: bearer token login and CORS for allowed origins
   const evil = await fetch(base + '/api/state', { method: 'OPTIONS', headers: { Origin: 'https://evil.example' } });
   assert.equal(evil.status, 403);
   assert.equal(evil.headers.get('access-control-allow-origin'), null);
+});
+
+const hook = (value: unknown) => ({ object: 'whatsapp_business_account', entry: [{ id: 'WABA1', changes: [{ field: 'messages', value }] }] });
+
+test('webhook: needs the key; replies land in the lead chat once; unknown numbers become leads', async () => {
+  const body = hook({
+    contacts: [{ wa_id: '919876543210', profile: { name: 'Priya S' } }],
+    messages: [{ id: 'wamid.in1', from: '919876543210', timestamp: String(Math.floor(Date.now() / 1000)), type: 'text', text: { body: 'Kal aa sakti hoon?' } }],
+  });
+  assert.equal((await call('POST', '/api/webhook/whatsapp', body, false)).status, 403);
+  assert.equal((await call('POST', '/api/webhook/whatsapp?key=wrong', body, false)).status, 403);
+  assert.equal((await call('POST', '/api/webhook/whatsapp?key=hook-key', body, false)).status, 200);
+  assert.equal((await call('POST', '/api/webhook/whatsapp?key=hook-key', body, false)).status, 200); // duplicate delivery
+  const stranger = hook({
+    contacts: [{ wa_id: '447700900123', profile: { name: 'New Person' } }],
+    messages: [{ id: 'wamid.in2', from: '447700900123', timestamp: '1700000000', type: 'image', image: { caption: 'report' } }],
+  });
+  await call('POST', '/api/webhook/whatsapp?key=hook-key', stranger, false);
+
+  const st = await call('GET', '/api/state');
+  const priya = st.json.leads.find((l: any) => l.phone === '919876543210');
+  const inMsgs = st.json.chats.filter((c: any) => c.lead_id === priya.id && c.kind === 'in');
+  assert.equal(inMsgs.length, 1);
+  assert.equal(inMsgs[0].text, 'Kal aa sakti hoon?');
+  assert.ok(priya.last_inbound_at);
+  const newLead = st.json.leads.find((l: any) => l.phone === '447700900123');
+  assert.equal(newLead.name, 'New Person');
+  assert.deepEqual(newLead.tags, ['whatsapp']);
+  assert.equal(newLead.opted_in_at, null);
+  assert.equal(st.json.chats.find((c: any) => c.lead_id === newLead.id).text, '[image] report');
+
+  // Meta verification handshake
+  const v = await fetch(base + '/api/webhook/whatsapp?hub.mode=subscribe&hub.verify_token=hook-key&hub.challenge=abc');
+  assert.equal(await v.text(), 'abc');
+});
+
+test('chat: notes saved and deletable; reply only within 24 h; statuses update ticks', async () => {
+  const st = await call('GET', '/api/state');
+  const priya = st.json.leads.find((l: any) => l.phone === '919876543210');
+  const rahul = st.json.leads.find((l: any) => l.name === 'Rahul');
+  const note = await call('POST', `/api/leads/${priya.id}/notes`, { text: 'Called, coming Monday 11am' });
+  assert.equal(note.status, 200);
+  assert.equal(note.json.entry.kind, 'note');
+
+  // Rahul never wrote to us: free text is refused
+  const no = await call('POST', `/api/leads/${rahul.id}/reply`, { text: 'Hello' });
+  assert.equal(no.status, 400);
+  assert.match(no.json.error, /24 hours/);
+
+  // Priya wrote just now: reply goes out as WhatsApp text
+  const before = sent.length;
+  const yes = await call('POST', `/api/leads/${priya.id}/reply`, { text: 'Haan, 11 baje aa jaiye' });
+  assert.equal(yes.status, 200, JSON.stringify(yes.json));
+  assert.equal(sent.length, before + 1);
+  assert.deepEqual(sent.at(-1).text, { preview_url: false, body: 'Haan, 11 baje aa jaiye' });
+  const waId = yes.json.entry.wa_message_id;
+
+  // delivery + read receipts for the reply and for a template message
+  const st2 = await call('GET', '/api/state');
+  const tpl = st2.json.messages.find((m: any) => m.status === 'sent' && m.wa_message_id);
+  assert.ok(tpl.text, 'sent template keeps the text the lead received');
+  await call('POST', '/api/webhook/whatsapp?key=hook-key', hook({ statuses: [
+    { id: waId, status: 'delivered', timestamp: '1700000001' },
+    { id: waId, status: 'read', timestamp: '1700000002' },
+    { id: waId, status: 'delivered', timestamp: '1700000003' }, // late, must not downgrade
+    { id: tpl.wa_message_id, status: 'read', timestamp: '1700000004' },
+  ] }), false);
+  const st3 = await call('GET', '/api/state');
+  assert.equal(st3.json.chats.find((c: any) => c.wa_message_id === waId).status, 'read');
+  const tpl2 = st3.json.messages.find((m: any) => m.id === tpl.id);
+  assert.ok(tpl2.read_at && tpl2.delivered_at);
+
+  // only notes can be deleted
+  assert.equal((await call('DELETE', `/api/chats/${yes.json.entry.id}`)).status, 400);
+  assert.equal((await call('DELETE', `/api/chats/${note.json.entry.id}`)).status, 200);
 });

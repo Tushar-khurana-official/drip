@@ -14,6 +14,8 @@ export interface Lead {
   notes: string;
   /** When the lead agreed to receive WhatsApp messages. Messages are only scheduled for opted-in leads. */
   opted_in_at: string | null;
+  /** Last WhatsApp message received from the lead (free-text replies allowed for 24 h after). */
+  last_inbound_at?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -83,6 +85,32 @@ export interface Message {
   sent_at?: string;
   /** Message id returned by WhatsApp. */
   wa_message_id?: string;
+  /** Text the lead received (template filled in), saved when sent. */
+  text?: string;
+  /** From WhatsApp status webhooks. */
+  delivered_at?: string;
+  read_at?: string;
+  error?: string;
+}
+
+/**
+ * One entry in a lead's chat that is not a scheduled template:
+ * - in:   a WhatsApp message from the lead (webhook)
+ * - out:  a free-text WhatsApp reply sent from Drip
+ * - note: something the team wrote down (call, visit, what was discussed); never sent
+ */
+export interface ChatEntry {
+  id: string;
+  lead_id: string;
+  kind: 'in' | 'out' | 'note';
+  text: string;
+  at: string;
+  /** WhatsApp message id (in / out). */
+  wa_message_id?: string;
+  /** For in: message type when it is not text (image, audio, ...). */
+  media_type?: string;
+  /** For out: delivery status. */
+  status?: 'sent' | 'delivered' | 'read' | 'failed';
   error?: string;
 }
 
@@ -95,4 +123,5 @@ export interface DripDoc {
   leads: Lead[];
   campaigns: Campaign[];
   messages: Message[];
+  chats: ChatEntry[];
 }

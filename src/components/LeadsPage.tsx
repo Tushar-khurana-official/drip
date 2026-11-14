@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from 'react';
-import { CheckSquare, Pencil, Plus, Search, Send, ShieldCheck, Tag as TagIcon, Trash2, Upload } from 'lucide-react';
-import type { Lead, LeadStatus, Message } from '../types';
+import { CheckSquare, MessageCircle, Pencil, Plus, Search, Send, ShieldCheck, Tag as TagIcon, Trash2, Upload } from 'lucide-react';
+import type { Campaign, ChatEntry, Lead, LeadStatus, Message } from '../types';
+import { LeadChat } from './LeadChat';
 import { allTags, filterLeads, formatPhone, LEAD_STATUSES, normalizePhone, normalizeTags, parseCsv, rowsToLeads, STATUS_LABEL } from '../lib/leads';
 import { api, ApiError } from '../services/api';
 import { cls, Modal, STATUS_STYLE, Tag } from './ui';
@@ -8,12 +9,27 @@ import { cls, Modal, STATUS_STYLE, Tag } from './ui';
 interface Props {
   leads: Lead[];
   messages: Message[];
+  campaigns: Campaign[];
+  chats: ChatEntry[];
+  sendingEnabled: boolean;
   onChanged: () => Promise<void>;
   onToast: (t: string) => void;
   onSendTemplate: (leadIds: string[]) => void;
 }
 
-export function LeadsPage({ leads, messages, onChanged, onToast, onSendTemplate }: Props) {
+export function LeadsPage({ leads, messages, campaigns, chats, sendingEnabled, onChanged, onToast, onSendTemplate }: Props) {
+  const [chatFor, setChatFor] = useState<string | null>(null);
+  /** Latest chat activity per lead, for the preview line and the "new reply" dot. */
+  const lastActivity = useMemo(() => {
+    const m = new Map<string, { text: string; at: string; incoming: boolean }>();
+    const put = (leadId: string, text: string, at: string, incoming: boolean) => {
+      const cur = m.get(leadId);
+      if (!cur || at > cur.at) m.set(leadId, { text, at, incoming });
+    };
+    for (const c of chats) put(c.lead_id, c.kind === 'note' ? `Note: ${c.text}` : c.text, c.at, c.kind === 'in');
+    for (const x of messages) if (x.status === 'sent' && x.sent_at) put(x.lead_id, x.text ? `You: ${x.text}` : 'Template sent', x.sent_at, false);
+    return m;
+  }, [chats, messages]);
   const [query, setQuery] = useState('');
   const [tags, setTags] = useState<string[]>([]);
   const [tagMode, setTagMode] = useState<'all' | 'any'>('any');
@@ -179,7 +195,10 @@ export function LeadsPage({ leads, messages, onChanged, onToast, onSendTemplate 
                 <input type="checkbox" className="mt-1 accent-indigo-600" checked={selected.has(l.id)} onChange={() => toggle(l.id)} aria-label={`Select ${l.name}`} />
                 <div className="flex-1 min-w-0 space-y-1">
                   <div className="flex flex-wrap items-center gap-2">
-                    <span className="font-semibold text-slate-900">{l.name}</span>
+                    <button className="font-semibold text-slate-900 hover:text-indigo-700 hover:underline text-left" onClick={() => setChatFor(l.id)}>
+                      {l.name}
+                    </button>
+                    {lastActivity.get(l.id)?.incoming && <span className="w-2 h-2 rounded-full bg-emerald-500" title="Last message is from the lead" />}
                     <select
                       value={l.status}
                       onChange={(e) => run(() => api.updateLead(l.id, { status: e.target.value as LeadStatus }), 'Status updated')}
@@ -200,6 +219,11 @@ export function LeadsPage({ leads, messages, onChanged, onToast, onSendTemplate 
                     {l.source && ` · ${l.source}`}
                     {l.notes && ` · ${l.notes}`}
                   </p>
+                  {lastActivity.get(l.id) && (
+                    <button className="block max-w-full text-left text-xs text-slate-600 truncate hover:text-indigo-700" onClick={() => setChatFor(l.id)}>
+                      {lastActivity.get(l.id)!.text.split('\n')[0]}
+                    </button>
+                  )}
                   {l.tags.length > 0 && (
                     <div className="flex flex-wrap gap-1">
                       {l.tags.map((t) => (
@@ -209,6 +233,9 @@ export function LeadsPage({ leads, messages, onChanged, onToast, onSendTemplate 
                   )}
                 </div>
                 <div className="flex gap-1 shrink-0">
+                  <button className={cls.secondary} onClick={() => setChatFor(l.id)} aria-label={`Chat with ${l.name}`} title="Chat & notes">
+                    <MessageCircle className="w-4 h-4" />
+                  </button>
                   <button className={cls.secondary} onClick={() => onSendTemplate([l.id])} disabled={!l.opted_in_at} aria-label={`Send template to ${l.name}`} title={l.opted_in_at ? 'Send template' : 'Lead has not opted in'}>
                     <Send className="w-4 h-4" />
                   </button>
@@ -228,6 +255,21 @@ export function LeadsPage({ leads, messages, onChanged, onToast, onSendTemplate 
         ))}
       </datalist>
 
+      {chatFor && leads.find((l) => l.id === chatFor) && (
+        <LeadChat
+          lead={leads.find((l) => l.id === chatFor)!}
+          messages={messages}
+          campaigns={campaigns}
+          chats={chats}
+          sendingEnabled={sendingEnabled}
+          onClose={() => setChatFor(null)}
+          onChanged={onChanged}
+          onSendTemplate={() => {
+            setChatFor(null);
+            onSendTemplate([chatFor]);
+          }}
+        />
+      )}
       {editing && (
         <LeadForm
           lead={editing === 'new' ? null : editing}

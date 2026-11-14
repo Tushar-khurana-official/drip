@@ -19,18 +19,20 @@ import {
   signSession,
 } from './auth.js';
 import { getStore } from './store.js';
-import { fetchTemplates, sendMessage, waConfig } from './whatsapp.js';
+import { fetchTemplates, sendMessage, textPayload, waConfig } from './whatsapp.js';
+import { applyWebhook, canReply, parseWebhook, signatureOk, webhookKeyOk } from './webhook.js';
 import { sendDueNow } from './sender.js';
 import { LEAD_STATUSES, normalizePhone, normalizeTags } from '../lib/leads.js';
 import { buildTemplatePayload, mappingProblems, templateVariables } from '../lib/templates.js';
-import type { Campaign, Lead, LeadStatus, Message, VarSource, WaTemplate } from '../types.js';
+import type { Campaign, ChatEntry, Lead, LeadStatus, Message, VarSource, WaTemplate } from '../types.js';
 
 dotenv.config();
 
 export const app = express();
 app.disable('x-powered-by');
 app.set('trust proxy', true);
-app.use(express.json({ limit: '5mb' }));
+// Keep the raw body for the WhatsApp webhook signature check.
+app.use(express.json({ limit: '5mb', verify: (req, _res, buf) => ((req as Request & { rawBody?: Buffer }).rawBody = buf) }));
 
 /**
  * CORS for a front end hosted on another site (GitHub Pages). Only the origins in ALLOWED_ORIGINS may call
@@ -193,6 +195,7 @@ app.post('/api/leads/bulk', requireLogin, wrap(async (req, res) => {
     if (req.body?.delete) {
       const before = doc.leads.length;
       doc.leads = doc.leads.filter((l) => !ids.has(l.id));
+      doc.chats = (doc.chats ?? []).filter((c) => !ids.has(c.lead_id));
       cancelPending(doc.messages, (m) => ids.has(m.lead_id), 'Lead deleted');
       return before - doc.leads.length;
     }
@@ -252,6 +255,76 @@ app.post('/api/leads/import', requireLogin, wrap(async (req, res) => {
   });
   log('leads_imported', result);
   res.json(result);
+}));
+
+/* -------------------------------- chat -------------------------------- */
+
+/** A note the team writes on a lead's chat (call, visit, what was discussed). Never sent. */
+app.post('/api/leads/:id/notes', requireLogin, wrap(async (req, res) => {
+  const text = str(req.body?.text, 4000);
+  if (!text) throw new BadRequest('Write something first');
+  const store = await getStore();
+  const entry = await store.mutate((doc) => {
+    const lead = doc.leads.find((l) => l.id === req.params.id);
+    if (!lead) throw new BadRequest('Lead not found');
+    const e: ChatEntry = { id: id('chat'), lead_id: lead.id, kind: 'note', text, at: new Date().toISOString() };
+    (doc.chats ??= []).push(e);
+    lead.updated_at = e.at;
+    return e;
+  });
+  res.json({ entry });
+}));
+
+app.delete('/api/chats/:id', requireLogin, wrap(async (req, res) => {
+  const store = await getStore();
+  await store.mutate((doc) => {
+    const e = (doc.chats ?? []).find((c) => c.id === req.params.id);
+    if (!e || e.kind !== 'note') throw new BadRequest('Only notes can be deleted');
+    doc.chats = doc.chats.filter((c) => c.id !== e.id);
+  });
+  res.json({ ok: true });
+}));
+
+/** Free-text WhatsApp reply. WhatsApp allows it only within 24 h of the lead's last message. */
+app.post('/api/leads/:id/reply', requireLogin, wrap(async (req, res) => {
+  if (!waConfig().sending) throw new BadRequest('Sending is off: set WHATSAPP_TOKEN and WHATSAPP_PHONE_NUMBER_ID');
+  const text = str(req.body?.text, 4096);
+  if (!text) throw new BadRequest('Write a message first');
+  const store = await getStore();
+  const lead = (await store.read()).leads.find((l) => l.id === req.params.id);
+  if (!lead) throw new BadRequest('Lead not found');
+  if (!canReply(lead)) throw new BadRequest('WhatsApp only allows a free-text reply within 24 hours of the lead\'s last message. Send an approved template instead.');
+  const r = await sendMessage(textPayload(lead.phone, text));
+  const entry: ChatEntry = {
+    id: id('chat'), lead_id: lead.id, kind: 'out', text, at: new Date().toISOString(),
+    wa_message_id: r.id, status: r.ok ? 'sent' : 'failed', error: r.ok ? undefined : r.error,
+  };
+  await store.mutate((doc) => {
+    (doc.chats ??= []).push(entry);
+  });
+  if (!r.ok) throw new BadRequest(`WhatsApp: ${r.error}`);
+  res.json({ entry });
+}));
+
+/* ------------------------------- webhook ------------------------------- */
+
+// Meta's verification handshake (only needed if Meta calls Drip directly).
+app.get('/api/webhook/whatsapp', (req, res) => {
+  if (req.query['hub.mode'] === 'subscribe' && webhookKeyOk(req.query['hub.verify_token'])) return res.status(200).send(String(req.query['hub.challenge'] ?? ''));
+  return res.sendStatus(403);
+});
+
+app.post('/api/webhook/whatsapp', wrap(async (req, res) => {
+  const viaKey = webhookKeyOk(req.query.key);
+  const viaSignature = Boolean(process.env.WHATSAPP_APP_SECRET) && signatureOk((req as Request & { rawBody?: Buffer }).rawBody, req.headers['x-hub-signature-256']);
+  if (!viaKey && !viaSignature) return res.status(403).json({ error: 'forbidden' });
+  const events = parseWebhook(req.body);
+  if (events.messages.length || events.statuses.length) {
+    const store = await getStore();
+    const r = await store.mutate((doc) => applyWebhook(doc, events, id));
+    log('webhook', r);
+  }
+  return res.json({ ok: true });
 }));
 
 /* ------------------------------ templates ------------------------------ */

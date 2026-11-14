@@ -10,7 +10,7 @@
  * Messages more than MAX_LATE late (e.g. the server was down) are marked failed, not sent.
  */
 import type { DripDoc, Message } from '../types.js';
-import { buildTemplatePayload } from '../lib/templates.js';
+import { buildTemplatePayload, renderPreview } from '../lib/templates.js';
 import { getStore, Store } from './store.js';
 import { Sender, sendMessage, waConfig } from './whatsapp.js';
 
@@ -35,7 +35,7 @@ export async function runDue(store: Store, send: Sender, now = new Date()) {
     const due = doc.messages
       .filter((m) => m.status === 'scheduled' && Date.parse(m.send_at) <= t)
       .sort((a, b) => a.send_at.localeCompare(b.send_at));
-    const out: Array<{ msg: Message; payload: Record<string, unknown> | null; error?: string }> = [];
+    const out: Array<{ msg: Message; payload: Record<string, unknown> | null; text?: string; error?: string }> = [];
     for (const m of due) {
       if (out.length >= BATCH) break;
       if (t - Date.parse(m.send_at) > MAX_LATE_MS) {
@@ -49,19 +49,23 @@ export async function runDue(store: Store, send: Sender, now = new Date()) {
       m.claimed_at = nowIso;
       if (!lead || !campaign) out.push({ msg: m, payload: null, error: 'Lead or campaign was deleted' });
       else if (!lead.opted_in_at) out.push({ msg: m, payload: null, error: 'Lead has not opted in' });
-      else out.push({ msg: { ...m }, payload: buildTemplatePayload(campaign.template, campaign.mapping, lead, campaign.header_media_url) });
+      else {
+        const p = renderPreview(campaign.template, campaign.mapping, lead);
+        const text = [p.header, p.body, p.footer].filter(Boolean).join('\n\n');
+        out.push({ msg: { ...m }, payload: buildTemplatePayload(campaign.template, campaign.mapping, lead, campaign.header_media_url), text });
+      }
     }
     return out;
   });
 
-  const results: Array<{ id: string; ok: boolean; wa_id?: string; error?: string }> = [];
+  const results: Array<{ id: string; ok: boolean; wa_id?: string; text?: string; error?: string }> = [];
   for (const c of claimed) {
     if (!c.payload) {
       results.push({ id: c.msg.id, ok: false, error: c.error });
       continue;
     }
     const r = await send(c.payload);
-    results.push({ id: c.msg.id, ok: r.ok, wa_id: r.id, error: r.error });
+    results.push({ id: c.msg.id, ok: r.ok, wa_id: r.id, text: c.text, error: r.error });
   }
 
   if (results.length) {
@@ -71,7 +75,7 @@ export async function runDue(store: Store, send: Sender, now = new Date()) {
         const m = doc.messages.find((x) => x.id === r.id);
         if (!m) continue;
         if (r.ok) {
-          Object.assign(m, { status: 'sent', sent_at: sentAt, wa_message_id: r.wa_id, error: undefined });
+          Object.assign(m, { status: 'sent', sent_at: sentAt, wa_message_id: r.wa_id, text: r.text, error: undefined });
           const lead = doc.leads.find((l) => l.id === m.lead_id);
           if (lead && lead.status === 'new') lead.status = 'contacted';
         } else Object.assign(m, { status: 'failed', error: r.error ?? 'Failed' });

@@ -14,6 +14,8 @@ WhatsApp API (Meta Cloud API format, via the provider's gateway).
 | **Campaigns** | Select leads (or choose tags) → *Send template* → choose a template → map each variable (`{{1}}`, named params, URL button params) to the lead's first name, full name, phone, or fixed text → add the media link if the header is an image/video/document → choose the time → *Schedule*. *Send test* sends it to your own number first. |
 | **Tracking** | Each campaign shows scheduled / sent / failed / cancelled per lead, with WhatsApp's error message when one fails. Change the time or cancel what is still scheduled; retry failed messages. A lead moves from *new* to *contacted* once a message is sent. |
 
+| **Chat** | Click a lead (or its chat button) to see everything with that lead as a WhatsApp-style chat: templates sent (with sent / delivered / read ticks), their replies, your WhatsApp replies, and notes the team writes (calls, visits, what was discussed). Free-text WhatsApp replies are possible within 24 hours of the lead's last message (WhatsApp's rule); otherwise send a template. |
+
 Messages are only scheduled for leads marked as opted in. Opting a lead out cancels their pending messages.
 
 ## Run it
@@ -50,7 +52,9 @@ templates gives *"request node (waba_id) does not match"*.
   never send the same message.
 - A message interrupted mid-send is marked failed after 15 minutes, never resent automatically.
 - Messages more than 24 hours late (server was down) are marked failed instead of being sent late.
-- Delivered / read receipts need the WhatsApp webhook, which currently points at the provider; not shown yet.
+- Replies and delivered / read ticks arrive through the WhatsApp webhook. Ask the provider to forward it to
+  `https://<drip>/api/webhook/whatsapp?key=<WHATSAPP_WEBHOOK_KEY>`. Without it, the chat shows what Drip sent
+  and your notes, but not the lead's replies. Messages from unknown numbers create a new lead tagged `whatsapp`.
 - Logs contain counts only, never names, numbers or message text.
 
 ## Deploy on Vercel

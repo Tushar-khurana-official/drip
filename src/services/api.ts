@@ -1,11 +1,12 @@
 /** Browser client for the Drip API. The session is an httpOnly cookie. */
-import type { BusinessSettings, Campaign, Lead, LeadStatus, Message, VarSource, WaTemplate } from '../types';
+import type { BusinessSettings, Campaign, ChatEntry, Lead, LeadStatus, Message, VarSource, WaTemplate } from '../types';
 
 export interface AppState {
   settings: BusinessSettings;
   leads: Lead[];
   campaigns: Campaign[];
   messages: Message[];
+  chats: ChatEntry[];
   whatsapp: { sending: boolean; templates: boolean };
   storage_persistent: boolean;
 }
@@ -112,5 +113,8 @@ export const api = {
   rescheduleCampaign: (id: string, send_at: string) => call('POST', `/api/campaigns/${encodeURIComponent(id)}/reschedule`, { send_at }),
   cancelMessage: (id: string) => call('POST', `/api/messages/${encodeURIComponent(id)}/cancel`),
   retryMessage: (id: string) => call('POST', `/api/messages/${encodeURIComponent(id)}/retry`),
+  addNote: (leadId: string, text: string) => call<{ entry: ChatEntry }>('POST', `/api/leads/${encodeURIComponent(leadId)}/notes`, { text }),
+  deleteNote: (id: string) => call('DELETE', `/api/chats/${encodeURIComponent(id)}`),
+  reply: (leadId: string, text: string) => call<{ entry: ChatEntry }>('POST', `/api/leads/${encodeURIComponent(leadId)}/reply`, { text }),
   sendDue: () => call<{ sent: number; failed: number }>('POST', '/api/send-due'),
 };

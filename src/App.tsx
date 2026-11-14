@@ -19,7 +19,7 @@ export default function App({ initial, onLogout }: { initial: AppState; onLogout
 
   // Pick up messages the server has sent in the meantime.
   useEffect(() => {
-    const id = window.setInterval(() => refresh().catch(() => undefined), 30_000);
+    const id = window.setInterval(() => refresh().catch(() => undefined), 15_000);
     return () => window.clearInterval(id);
   }, [refresh]);
 
@@ -75,7 +75,16 @@ export default function App({ initial, onLogout }: { initial: AppState; onLogout
         )}
 
         {tab === 'leads' && (
-          <LeadsPage leads={state.leads} messages={state.messages} onChanged={refresh} onToast={setToast} onSendTemplate={(ids) => setComposeFor(ids)} />
+          <LeadsPage
+            leads={state.leads}
+            messages={state.messages}
+            campaigns={state.campaigns}
+            chats={state.chats ?? []}
+            sendingEnabled={state.whatsapp.sending}
+            onChanged={refresh}
+            onToast={setToast}
+            onSendTemplate={(ids) => setComposeFor(ids)}
+          />
         )}
         {tab === 'campaigns' && (
           <CampaignsPage
