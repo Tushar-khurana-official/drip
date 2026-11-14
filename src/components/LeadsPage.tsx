@@ -381,15 +381,44 @@ function LeadForm({ lead, tagSuggestions, onClose, onSaved }: { lead: Lead | nul
   );
 }
 
+/** Spreadsheet cell -> text (numbers stay whole: 9876543210, not 9.88E+09). */
+function cellText(v: unknown): string {
+  if (v === null || v === undefined) return '';
+  if (typeof v === 'number') return Number.isInteger(v) ? v.toFixed(0) : String(v);
+  if (v instanceof Date) return v.toLocaleDateString('en-IN');
+  return String(v);
+}
+
 function ImportModal({ onClose, onDone }: { onClose: () => void; onDone: (msg: string) => void }) {
   const [text, setText] = useState('');
+  const [file, setFile] = useState<{ name: string; rows: string[][] } | null>(null);
+  const [reading, setReading] = useState(false);
   const [tags, setTags] = useState('');
   const [optedIn, setOptedIn] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const parsed = useMemo(() => rowsToLeads(parseCsv(text)), [text]);
+  const parsed = useMemo(() => rowsToLeads(file ? file.rows : parseCsv(text)), [file, text]);
 
-  const readFile = async (file: File) => setText(await file.text());
+  const readFile = async (f: File) => {
+    setError(null);
+    setReading(true);
+    try {
+      const name = f.name.toLowerCase();
+      if (name.endsWith('.xlsx')) {
+        const { readSheet } = await import('read-excel-file/browser');
+        const data = await readSheet(f);
+        setFile({ name: f.name, rows: data.map((row) => row.map(cellText)) });
+      } else if (name.endsWith('.xls')) {
+        setError('Old .xls files are not supported. In Excel use File → Save As → Excel Workbook (.xlsx), then choose that file.');
+      } else {
+        setFile({ name: f.name, rows: parseCsv(await f.text()) });
+      }
+    } catch {
+      setError('Could not read this file. Make sure it is an Excel (.xlsx) or CSV file.');
+    } finally {
+      setReading(false);
+    }
+  };
 
   const submit = async () => {
     setBusy(true);
@@ -404,34 +433,108 @@ function ImportModal({ onClose, onDone }: { onClose: () => void; onDone: (msg: s
     }
   };
 
+  const hasInput = Boolean(file || text.trim());
+
   return (
     <Modal title="Import leads" onClose={onClose}>
       <div className="space-y-3">
         <p className="text-sm text-slate-600">
-          Upload a CSV or paste rows. Columns: <b>name, phone, tags, notes</b> (a header row is optional; tags separated by <code>|</code> or in quotes).
-          Existing numbers keep their details and get the new tags.
+          Choose an <b>Excel (.xlsx)</b> or <b>CSV</b> file. First row = headings: <b>name, phone, tags, notes</b> (only phone is required; several tags
+          separated by <code>|</code>). Numbers already in Drip keep their details and get the new tags.
         </p>
-        <input type="file" accept=".csv,.txt,text/csv" onChange={(e) => e.target.files?.[0] && readFile(e.target.files[0])} className="text-sm" />
-        <textarea className={`${cls.input} font-mono text-xs`} rows={6} placeholder={'name,phone,tags\nPriya Sharma,9876543210,"vip,follow up"'} value={text} onChange={(e) => setText(e.target.value)} />
+
+        <label
+          className="flex flex-col items-center justify-center gap-1 p-5 rounded-xl border-2 border-dashed border-indigo-300 bg-indigo-50/50 hover:bg-indigo-50 cursor-pointer text-center"
+          onDragOver={(e) => e.preventDefault()}
+          onDrop={(e) => {
+            e.preventDefault();
+            const f = e.dataTransfer.files?.[0];
+            if (f) readFile(f);
+          }}
+        >
+          <Upload className="w-6 h-6 text-indigo-600" />
+          <span className="text-sm font-semibold text-indigo-700">{reading ? 'Reading…' : file ? file.name : 'Click to choose a file'}</span>
+          <span className="text-xs text-slate-500">{file ? 'Click to choose a different file' : 'or drag it here · .xlsx or .csv'}</span>
+          <input
+            type="file"
+            className="sr-only"
+            accept=".xlsx,.csv,.txt,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            onChange={(e) => {
+              if (e.target.files?.[0]) readFile(e.target.files[0]);
+              e.target.value = '';
+            }}
+          />
+        </label>
+
+        {!file && (
+          <details className="text-sm">
+            <summary className="cursor-pointer text-slate-600">…or paste rows copied from Excel</summary>
+            <textarea
+              className={`${cls.input} font-mono text-xs mt-2`}
+              rows={5}
+              placeholder={'name, phone, tags\nPriya Sharma, 9876543210, vip|follow up'}
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+            />
+          </details>
+        )}
+
+        {hasInput && parsed.leads.length > 0 && (
+          <div className="rounded-lg border border-slate-200 overflow-hidden">
+            <table className="w-full text-xs">
+              <thead className="bg-slate-50 text-slate-500">
+                <tr>
+                  <th className="text-left px-2 py-1.5 font-semibold">Name</th>
+                  <th className="text-left px-2 py-1.5 font-semibold">Phone</th>
+                  <th className="text-left px-2 py-1.5 font-semibold">Tags</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {parsed.leads.slice(0, 5).map((l, i) => (
+                  <tr key={i}>
+                    <td className="px-2 py-1.5 text-slate-900">{l.name}</td>
+                    <td className="px-2 py-1.5 text-slate-600">{formatPhone(l.phone)}</td>
+                    <td className="px-2 py-1.5 text-slate-600">{l.tags.join(', ')}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {parsed.leads.length > 5 && <p className="px-2 py-1.5 text-xs text-slate-500 bg-slate-50">…and {parsed.leads.length - 5} more</p>}
+          </div>
+        )}
+
+        {hasInput && (
+          <p className="text-sm text-slate-700">
+            <b>{parsed.leads.length}</b> lead{parsed.leads.length === 1 ? '' : 's'} ready
+            {parsed.invalid.length > 0 && (
+              <span className="text-rose-600">
+                {' '}· {parsed.invalid.length} row{parsed.invalid.length === 1 ? '' : 's'} without a valid phone number (row {parsed.invalid.slice(0, 8).join(', ')}
+                {parsed.invalid.length > 8 ? '…' : ''})
+              </span>
+            )}
+            {parsed.leads.length === 0 && <span className="block text-rose-600">No phone numbers found. Check that one column is called "phone" or "mobile".</span>}
+          </p>
+        )}
+
         <label className="block">
-          <span className={cls.label}>Add these tags to everyone imported</span>
+          <span className={cls.label}>Add these tags to everyone imported (optional)</span>
           <input className={cls.input} placeholder="e.g. camp-nov, walk-in" value={tags} onChange={(e) => setTags(e.target.value)} />
         </label>
         <label className="flex items-start gap-2 text-sm text-slate-700">
           <input type="checkbox" className="mt-0.5 accent-indigo-600" checked={optedIn} onChange={(e) => setOptedIn(e.target.checked)} />
           Everyone in this list agreed to receive WhatsApp messages from us
         </label>
-        {text && (
-          <p className="text-sm text-slate-700">
-            <b>{parsed.leads.length}</b> valid rows{parsed.invalid.length > 0 && <span className="text-rose-600"> · {parsed.invalid.length} without a valid number (lines {parsed.invalid.slice(0, 8).join(', ')}{parsed.invalid.length > 8 ? '…' : ''})</span>}
-          </p>
-        )}
         {error && <p className="text-sm text-rose-600">{error}</p>}
         <div className="flex justify-end gap-2">
+          {file && (
+            <button className={`${cls.secondary} mr-auto`} onClick={() => setFile(null)}>
+              Remove file
+            </button>
+          )}
           <button className={cls.secondary} onClick={onClose}>
             Cancel
           </button>
-          <button className={cls.primary} disabled={busy || parsed.leads.length === 0} onClick={submit}>
+          <button className={cls.primary} disabled={busy || reading || parsed.leads.length === 0} onClick={submit}>
             {busy ? 'Importing…' : `Import ${parsed.leads.length || ''}`}
           </button>
         </div>
