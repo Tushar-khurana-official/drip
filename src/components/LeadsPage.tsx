@@ -38,6 +38,7 @@ export function LeadsPage({ leads, messages, campaigns, chats, tagDefs, sequence
   const [tags, setTags] = useState<string[]>([]);
   const [tagMode, setTagMode] = useState<'all' | 'any'>('any');
   const [status, setStatus] = useState<LeadStatus | 'all'>('all');
+  const [optFilter, setOptFilter] = useState<'all' | 'yes' | 'no'>('all');
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [editing, setEditing] = useState<Lead | 'new' | null>(null);
   const [importing, setImporting] = useState(false);
@@ -45,7 +46,10 @@ export function LeadsPage({ leads, messages, campaigns, chats, tagDefs, sequence
   const tagCounts = useMemo(() => allTags(leads), [leads]);
   /** Tags to suggest: the business's own tags first, then any other tag in use. */
   const tagSuggestions = useMemo(() => [...new Set([...tagDefs.map((d) => d.name), ...tagCounts.map((t) => t.tag)])], [tagDefs, tagCounts]);
-  const visible = useMemo(() => filterLeads(leads, { query, tags, tagMode, status }), [leads, query, tags, tagMode, status]);
+  const visible = useMemo(
+    () => filterLeads(leads, { query, tags, tagMode, status }).filter((l) => optFilter === 'all' || (optFilter === 'yes') === Boolean(l.opted_in_at)),
+    [leads, query, tags, tagMode, status, optFilter],
+  );
   const pending = useMemo(() => {
     const m = new Map<string, number>();
     for (const x of messages) if (x.status === 'scheduled') m.set(x.lead_id, (m.get(x.lead_id) ?? 0) + 1);
@@ -96,6 +100,11 @@ export function LeadsPage({ leads, messages, campaigns, chats, tagDefs, sequence
               {STATUS_LABEL[s]}
             </option>
           ))}
+        </select>
+        <select className={`${cls.input} sm:w-40`} value={optFilter} onChange={(e) => setOptFilter(e.target.value as 'all' | 'yes' | 'no')} aria-label="Opt-in filter">
+          <option value="all">Opted in or not</option>
+          <option value="yes">Opted in</option>
+          <option value="no">Not opted in</option>
         </select>
         <button className={cls.secondary} onClick={() => setImporting(true)}>
           <Upload className="w-4 h-4" /> Import
@@ -188,6 +197,12 @@ export function LeadsPage({ leads, messages, campaigns, chats, tagDefs, sequence
             <ShieldCheck className="w-4 h-4" /> Opted in
           </button>
           <button
+            className={cls.secondary}
+            onClick={() => confirm(`Mark ${sel.length} lead(s) as not opted in? Their scheduled messages are cancelled.`) && run(() => api.bulk({ ids: sel, opted_in: false }), 'Marked as not opted in')}
+          >
+            Not opted in
+          </button>
+          <button
             className={cls.danger}
             onClick={() => {
               if (confirm(`Delete ${sel.length} leads? Their scheduled messages are cancelled.`)) run(() => api.bulk({ ids: sel, delete: true }), 'Deleted').then(() => setSelected(new Set()));
@@ -256,7 +271,20 @@ export function LeadsPage({ leads, messages, campaigns, chats, tagDefs, sequence
                         </option>
                       ))}
                     </select>
-                    {!l.opted_in_at && <span className="text-xs font-medium px-1.5 py-0.5 rounded-md bg-rose-50 text-rose-700">Not opted in</span>}
+                    <select
+                      value={l.opted_in_at ? 'yes' : 'no'}
+                      onChange={(e) => {
+                        const yes = e.target.value === 'yes';
+                        if (!yes && pending.get(l.id) && !confirm(`${l.name} has scheduled messages. Opting out cancels them. Continue?`)) return;
+                        run(() => api.updateLead(l.id, { opted_in: yes }), yes ? `${l.name} opted in` : `${l.name} opted out`);
+                      }}
+                      className={`text-xs font-semibold px-1.5 py-0.5 rounded-md border-0 ${l.opted_in_at ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700'}`}
+                      aria-label={`WhatsApp opt-in for ${l.name}`}
+                      title="Did this person agree to receive WhatsApp messages?"
+                    >
+                      <option value="yes">Opted in</option>
+                      <option value="no">Not opted in</option>
+                    </select>
                     {(pending.get(l.id) ?? 0) > 0 && <span className="text-xs font-medium px-1.5 py-0.5 rounded-md bg-amber-50 text-amber-800">{pending.get(l.id)} scheduled</span>}
                     {(() => {
                       const next = nextAutomated(messages, l.id);
