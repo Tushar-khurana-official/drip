@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { CheckSquare, MessageCircle, Pencil, Plus, Search, Send, ShieldCheck, Tag as TagIcon, Trash2, Upload } from 'lucide-react';
 import type { Campaign, ChatEntry, Lead, LeadStatus, Message, Sequence, TagDef } from '../types';
 import { nextAutomated } from '../lib/automation';
@@ -41,7 +41,6 @@ export function LeadsPage({ leads, messages, campaigns, chats, tagDefs, sequence
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [editing, setEditing] = useState<Lead | 'new' | null>(null);
   const [importing, setImporting] = useState(false);
-  const [bulkTag, setBulkTag] = useState('');
 
   const tagCounts = useMemo(() => allTags(leads), [leads]);
   /** Tags to suggest: the business's own tags first, then any other tag in use. */
@@ -54,6 +53,16 @@ export function LeadsPage({ leads, messages, campaigns, chats, tagDefs, sequence
   }, [messages]);
 
   const sel = [...selected].filter((id) => leads.some((l) => l.id === id));
+  const selectedTags = useMemo(() => [...new Set(leads.filter((l) => selected.has(l.id)).flatMap((l) => l.tags))].sort(), [leads, selected]);
+  const [tagMenu, setTagMenu] = useState<string | null>(null);
+  useEffect(() => {
+    if (!tagMenu) return;
+    const close = (e: MouseEvent) => {
+      if (!(e.target as HTMLElement).closest('[data-tag-menu]')) setTagMenu(null);
+    };
+    document.addEventListener('mousedown', close);
+    return () => document.removeEventListener('mousedown', close);
+  }, [tagMenu]);
   const allVisibleSelected = visible.length > 0 && visible.every((l) => selected.has(l.id));
   const toggle = (id: string) =>
     setSelected((s) => {
@@ -123,15 +132,45 @@ export function LeadsPage({ leads, messages, campaigns, chats, tagDefs, sequence
           <button className={cls.primary} onClick={() => onSendTemplate(sel)}>
             <Send className="w-4 h-4" /> Send template
           </button>
-          <div className="flex items-center gap-1">
-            <input className="px-2 py-1.5 rounded-lg border border-indigo-200 text-sm w-32 bg-white" placeholder="tag" value={bulkTag} onChange={(e) => setBulkTag(e.target.value)} list="tag-list" />
-            <button className={cls.secondary} disabled={!normalizeTags(bulkTag).length} onClick={() => run(() => api.bulk({ ids: sel, add_tags: normalizeTags(bulkTag) }), 'Tag added').then(() => setBulkTag(''))}>
-              Add tag
-            </button>
-            <button className={cls.secondary} disabled={!normalizeTags(bulkTag).length} onClick={() => run(() => api.bulk({ ids: sel, remove_tags: normalizeTags(bulkTag) }), 'Tag removed').then(() => setBulkTag(''))}>
-              Remove
-            </button>
-          </div>
+          <select
+            className="px-2 py-1.5 rounded-lg border border-indigo-200 text-sm bg-white font-semibold text-indigo-900"
+            value=""
+            aria-label="Add tag to selected"
+            onChange={(e) => {
+              const v = e.target.value;
+              if (!v) return;
+              if (v === '__new') {
+                const name = normalizeTags(prompt('New tag name') ?? '')[0];
+                if (name) run(() => api.bulk({ ids: sel, add_tags: [name] }), `Tag "${name}" added to ${sel.length} lead${sel.length === 1 ? '' : 's'}`);
+                return;
+              }
+              run(() => api.bulk({ ids: sel, add_tags: [v] }), `Tag "${v}" added to ${sel.length} lead${sel.length === 1 ? '' : 's'}`);
+            }}
+          >
+            <option value="">+ Add tag…</option>
+            {tagSuggestions.map((t) => (
+              <option key={t} value={t}>
+                {t}
+                {sequences.some((x) => x.tag === t && x.enabled && x.steps.length) ? '  ⚡ automation' : ''}
+              </option>
+            ))}
+            <option value="__new">New tag…</option>
+          </select>
+          {selectedTags.length > 0 && (
+            <select
+              className="px-2 py-1.5 rounded-lg border border-indigo-200 text-sm bg-white"
+              value=""
+              aria-label="Remove tag from selected"
+              onChange={(e) => e.target.value && run(() => api.bulk({ ids: sel, remove_tags: [e.target.value] }), `Tag "${e.target.value}" removed`)}
+            >
+              <option value="">− Remove tag…</option>
+              {selectedTags.map((t) => (
+                <option key={t} value={t}>
+                  {t}
+                </option>
+              ))}
+            </select>
+          )}
           <select
             className="px-2 py-1.5 rounded-lg border border-indigo-200 text-sm bg-white"
             value=""
@@ -162,8 +201,8 @@ export function LeadsPage({ leads, messages, campaigns, chats, tagDefs, sequence
         </div>
       )}
 
-      <div className={`${cls.card} overflow-hidden`}>
-        <div className="flex items-center gap-3 px-4 py-2.5 border-b border-slate-100 bg-slate-50 text-xs font-semibold text-slate-500">
+      <div className={cls.card}>
+        <div className="flex items-center gap-3 px-4 py-2.5 border-b border-slate-100 bg-slate-50 rounded-t-2xl text-xs font-semibold text-slate-500">
           <input
             type="checkbox"
             className="accent-indigo-600"
@@ -239,13 +278,32 @@ export function LeadsPage({ leads, messages, campaigns, chats, tagDefs, sequence
                       {lastActivity.get(l.id)!.text.split('\n')[0]}
                     </button>
                   )}
-                  {l.tags.length > 0 && (
-                    <div className="flex flex-wrap gap-1">
-                      {l.tags.map((t) => (
-                        <Tag key={t} tag={t} onRemove={() => run(() => api.updateLead(l.id, { tags: l.tags.filter((x) => x !== t) }), 'Tag removed')} />
-                      ))}
-                    </div>
-                  )}
+                  <div className="flex flex-wrap items-center gap-1">
+                    {l.tags.map((t) => (
+                      <Tag key={t} tag={t} onRemove={() => run(() => api.updateLead(l.id, { tags: l.tags.filter((x) => x !== t) }), `Tag "${t}" removed`)} />
+                    ))}
+                    <span className="relative" data-tag-menu>
+                      <button
+                        className="text-xs font-semibold px-1.5 py-0.5 rounded-md border border-dashed border-slate-300 text-slate-600 hover:border-indigo-400 hover:text-indigo-700"
+                        onClick={() => setTagMenu(tagMenu === l.id ? null : l.id)}
+                        aria-label={`Add tag to ${l.name}`}
+                      >
+                        + Tag
+                      </button>
+                      {tagMenu === l.id && (
+                        <TagMenu
+                          options={tagSuggestions}
+                          current={l.tags}
+                          automated={new Set(sequences.filter((x) => x.enabled && x.steps.length).map((x) => x.tag))}
+                          optedIn={Boolean(l.opted_in_at)}
+                          onToggle={(t) => {
+                            const next = l.tags.includes(t) ? l.tags.filter((x) => x !== t) : [...l.tags, t];
+                            run(() => api.updateLead(l.id, { tags: next }), l.tags.includes(t) ? `Tag "${t}" removed` : `Tag "${t}" added`);
+                          }}
+                        />
+                      )}
+                    </span>
+                  </div>
                 </div>
                 <div className="flex gap-1 shrink-0">
                   <button className={cls.secondary} onClick={() => setChatFor(l.id)} aria-label={`Chat with ${l.name}`} title="Chat & notes">
@@ -598,5 +656,46 @@ function ImportModal({ onClose, onDone }: { onClose: () => void; onDone: (msg: s
         </div>
       </div>
     </Modal>
+  );
+}
+
+/** Pop-up list of tags for one lead: tick to add, untick to remove, or type a new one. */
+function TagMenu({ options, current, automated, optedIn, onToggle }: { options: string[]; current: string[]; automated: Set<string>; optedIn: boolean; onToggle: (t: string) => void }) {
+  const [q, setQ] = useState('');
+  const clean = normalizeTags(q)[0] ?? '';
+  const list = options.filter((t) => !q || t.includes(q.toLowerCase()));
+  return (
+    <div className="absolute left-0 top-full mt-1 z-30 w-60 rounded-xl border border-slate-200 bg-white shadow-lg p-2 space-y-1">
+      <input
+        autoFocus
+        className="w-full px-2 py-1.5 rounded-md border border-slate-300 text-sm"
+        placeholder="Find or create a tag"
+        value={q}
+        onChange={(e) => setQ(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' && clean) {
+            e.preventDefault();
+            onToggle(clean);
+            setQ('');
+          }
+        }}
+      />
+      <div className="max-h-56 overflow-y-auto">
+        {list.map((t) => (
+          <label key={t} className="flex items-center gap-2 px-1.5 py-1 rounded-md hover:bg-slate-50 cursor-pointer text-sm">
+            <input type="checkbox" className="accent-indigo-600" checked={current.includes(t)} onChange={() => onToggle(t)} />
+            <Tag tag={t} />
+            {automated.has(t) && <span className="ml-auto text-[10px] font-semibold text-emerald-700" title="Adding this tag starts its automatic messages">⚡ auto</span>}
+          </label>
+        ))}
+        {clean && !options.includes(clean) && (
+          <button className="w-full text-left px-1.5 py-1 rounded-md hover:bg-slate-50 text-sm text-indigo-700" onClick={() => onToggle(clean)}>
+            + Create "{clean}"
+          </button>
+        )}
+        {!list.length && !clean && <p className="text-xs text-slate-500 px-1.5 py-1">No tags yet. Type to create one.</p>}
+      </div>
+      {!optedIn && automated.size > 0 && <p className="text-[11px] text-amber-700 px-1.5">Not opted in: automatic messages will not start for this lead.</p>}
+    </div>
   );
 }
