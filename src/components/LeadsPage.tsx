@@ -251,70 +251,26 @@ export function LeadsPage({ leads, messages, campaigns, chats, tagDefs, sequence
         ) : (
           <ul className="divide-y divide-slate-100">
             {visible.map((l) => (
-              <li key={l.id} className="px-4 py-3 flex gap-3 items-start hover:bg-slate-50/60">
+              <li key={l.id} className="group px-4 py-3 flex gap-3 items-start hover:bg-slate-50/60">
                 <input type="checkbox" className="mt-1 accent-indigo-600" checked={selected.has(l.id)} onChange={() => toggle(l.id)} aria-label={`Select ${l.name}`} />
                 <div className="flex-1 min-w-0 space-y-1">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <button className="font-semibold text-slate-900 hover:text-indigo-700 hover:underline text-left" onClick={() => setChatFor(l.id)}>
+                  {/* Line 1: name, then only the tags chosen for this lead (nothing when there are none). */}
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <button className="font-semibold text-slate-900 hover:text-indigo-700 hover:underline text-left mr-1" onClick={() => setChatFor(l.id)}>
                       {l.name}
                     </button>
                     {lastActivity.get(l.id)?.incoming && <span className="w-2 h-2 rounded-full bg-emerald-500" title="Last message is from the lead" />}
-                    <select
-                      value={l.status}
-                      onChange={(e) => run(() => api.updateLead(l.id, { status: e.target.value as LeadStatus }), 'Status updated')}
-                      className={`text-xs font-semibold px-1.5 py-0.5 rounded-md border-0 ${STATUS_STYLE[l.status]}`}
-                      aria-label="Status"
-                    >
-                      {LEAD_STATUSES.map((s) => (
-                        <option key={s} value={s}>
-                          {STATUS_LABEL[s]}
-                        </option>
-                      ))}
-                    </select>
-                    <select
-                      value={l.opted_in_at ? 'yes' : 'no'}
-                      onChange={(e) => {
-                        const yes = e.target.value === 'yes';
-                        if (!yes && pending.get(l.id) && !confirm(`${l.name} has scheduled messages. Opting out cancels them. Continue?`)) return;
-                        run(() => api.updateLead(l.id, { opted_in: yes }), yes ? `${l.name} opted in` : `${l.name} opted out`);
-                      }}
-                      className={`text-xs font-semibold px-1.5 py-0.5 rounded-md border-0 ${l.opted_in_at ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700'}`}
-                      aria-label={`WhatsApp opt-in for ${l.name}`}
-                      title="Did this person agree to receive WhatsApp messages?"
-                    >
-                      <option value="yes">Opted in</option>
-                      <option value="no">Not opted in</option>
-                    </select>
-                    {(pending.get(l.id) ?? 0) > 0 && <span className="text-xs font-medium px-1.5 py-0.5 rounded-md bg-amber-50 text-amber-800">{pending.get(l.id)} scheduled</span>}
-                    {(() => {
-                      const next = nextAutomated(messages, l.id);
-                      const seq = next && sequences.find((x) => x.id === next.sequence_id);
-                      return next ? (
-                        <span className="text-xs font-medium px-1.5 py-0.5 rounded-md bg-emerald-50 text-emerald-700" title={`Automation for "${seq?.tag ?? ''}"`}>
-                          ⚡ next {formatWhen(next.send_at)}
-                        </span>
-                      ) : null;
-                    })()}
-                  </div>
-                  <p className="text-xs text-slate-500">
-                    {formatPhone(l.phone)}
-                    {l.source && ` · ${l.source}`}
-                    {l.notes && ` · ${l.notes}`}
-                  </p>
-                  {lastActivity.get(l.id) && (
-                    <button className="block max-w-full text-left text-xs text-slate-600 truncate hover:text-indigo-700" onClick={() => setChatFor(l.id)}>
-                      {lastActivity.get(l.id)!.text.split('\n')[0]}
-                    </button>
-                  )}
-                  <div className="flex flex-wrap items-center gap-1">
                     {l.tags.map((t) => (
                       <Tag key={t} tag={t} onRemove={() => run(() => api.updateLead(l.id, { tags: l.tags.filter((x) => x !== t) }), `Tag "${t}" removed`)} />
                     ))}
                     <span className="relative" data-tag-menu>
                       <button
-                        className="text-xs font-semibold px-1.5 py-0.5 rounded-md border border-dashed border-slate-300 text-slate-600 hover:border-indigo-400 hover:text-indigo-700"
+                        className={`text-xs font-semibold px-1.5 py-0.5 rounded-md border border-dashed border-slate-300 text-slate-500 hover:border-indigo-400 hover:text-indigo-700 transition-opacity ${
+                          tagMenu === l.id ? 'opacity-100' : 'sm:opacity-0 sm:group-hover:opacity-100 focus:opacity-100'
+                        }`}
                         onClick={() => setTagMenu(tagMenu === l.id ? null : l.id)}
                         aria-label={`Add tag to ${l.name}`}
+                        title="Choose tags"
                       >
                         + Tag
                       </button>
@@ -332,6 +288,57 @@ export function LeadsPage({ leads, messages, campaigns, chats, tagDefs, sequence
                       )}
                     </span>
                   </div>
+
+                  {/* Line 2: number and details, status, WhatsApp opt-in, what is scheduled. */}
+                  <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-slate-500">
+                    <span>
+                      {formatPhone(l.phone)}
+                      {l.source && ` · ${l.source}`}
+                      {l.notes && ` · ${l.notes}`}
+                    </span>
+                    <select
+                      value={l.status}
+                      onChange={(e) => run(() => api.updateLead(l.id, { status: e.target.value as LeadStatus }), 'Status updated')}
+                      className={`text-xs font-semibold px-1 py-0.5 rounded-md border-0 ${STATUS_STYLE[l.status]}`}
+                      aria-label="Status"
+                    >
+                      {LEAD_STATUSES.map((st) => (
+                        <option key={st} value={st}>
+                          {STATUS_LABEL[st]}
+                        </option>
+                      ))}
+                    </select>
+                    <select
+                      value={l.opted_in_at ? 'yes' : 'no'}
+                      onChange={(e) => {
+                        const yes = e.target.value === 'yes';
+                        if (!yes && pending.get(l.id) && !confirm(`${l.name} has scheduled messages. Opting out cancels them. Continue?`)) return;
+                        run(() => api.updateLead(l.id, { opted_in: yes }), yes ? `${l.name} opted in` : `${l.name} opted out`);
+                      }}
+                      className={`text-xs font-semibold px-1 py-0.5 rounded-md border-0 ${l.opted_in_at ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-500'}`}
+                      aria-label={`WhatsApp opt-in for ${l.name}`}
+                      title="Did this person agree to receive WhatsApp messages?"
+                    >
+                      <option value="yes">WhatsApp: opted in</option>
+                      <option value="no">WhatsApp: not opted in</option>
+                    </select>
+                    {(pending.get(l.id) ?? 0) > 0 && <span className="font-medium px-1.5 py-0.5 rounded-md bg-amber-50 text-amber-800">{pending.get(l.id)} scheduled</span>}
+                    {(() => {
+                      const next = nextAutomated(messages, l.id);
+                      const seq = next && sequences.find((x) => x.id === next.sequence_id);
+                      return next ? (
+                        <span className="font-medium px-1.5 py-0.5 rounded-md bg-emerald-50 text-emerald-700" title={`Automation for "${seq?.tag ?? ''}"`}>
+                          ⚡ next {formatWhen(next.send_at)}
+                        </span>
+                      ) : null;
+                    })()}
+                  </div>
+
+                  {lastActivity.get(l.id) && (
+                    <button className="block max-w-full text-left text-xs text-slate-600 truncate hover:text-indigo-700" onClick={() => setChatFor(l.id)}>
+                      {lastActivity.get(l.id)!.text.split('\n')[0]}
+                    </button>
+                  )}
                 </div>
                 <div className="flex gap-1 shrink-0">
                   <button className={cls.secondary} onClick={() => setChatFor(l.id)} aria-label={`Chat with ${l.name}`} title="Chat & notes">
