@@ -75,6 +75,7 @@ const RANK: Record<string, number> = { sent: 1, delivered: 2, read: 3 };
 /** Apply webhook events to the document. Returns counts. Unknown numbers become new leads. */
 export function applyWebhook(doc: DripDoc, ev: WebhookEvents, makeId: (p: string) => string) {
   let messages = 0, statuses = 0, newLeads = 0;
+  const repliedLeadIds = new Set<string>();
   doc.chats ??= [];
   const seen = new Set(doc.chats.filter((c) => c.wa_message_id).map((c) => c.wa_message_id));
   for (const m of ev.messages) {
@@ -91,6 +92,7 @@ export function applyWebhook(doc: DripDoc, ev: WebhookEvents, makeId: (p: string
     if (m.type !== 'text') entry.media_type = m.type;
     doc.chats.push(entry);
     seen.add(m.wa_id);
+    repliedLeadIds.add(lead.id);
     lead.last_inbound_at = !lead.last_inbound_at || m.at > lead.last_inbound_at ? m.at : lead.last_inbound_at;
     if (lead.status === 'new' || lead.status === 'contacted') lead.status = 'interested';
     lead.updated_at = new Date().toISOString();
@@ -115,7 +117,7 @@ export function applyWebhook(doc: DripDoc, ev: WebhookEvents, makeId: (p: string
     }
     if (chat && (RANK[s.status] ?? 0) > (RANK[chat.status ?? 'sent'] ?? 0)) chat.status = s.status as ChatEntry['status'];
   }
-  return { messages, statuses, newLeads };
+  return { messages, statuses, newLeads, repliedLeadIds: [...repliedLeadIds] };
 }
 
 export function webhookKeyOk(key: unknown): boolean {

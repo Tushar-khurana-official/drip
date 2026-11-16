@@ -1,13 +1,14 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { AlertTriangle, CalendarClock, FileText, LogOut, Pencil, Users } from 'lucide-react';
+import { AlertTriangle, CalendarClock, FileText, LogOut, Pencil, Tags, Users } from 'lucide-react';
 import { api, type AppState } from './services/api';
 import { LeadsPage } from './components/LeadsPage';
 import { CampaignsPage } from './components/CampaignsPage';
 import { TemplatesPage } from './components/TemplatesPage';
 import { CampaignComposer } from './components/CampaignComposer';
-import { Toast } from './components/ui';
+import { setTagColors, Toast } from './components/ui';
+import { TagsPage } from './components/TagsPage';
 
-type Tab = 'leads' | 'campaigns' | 'templates';
+type Tab = 'leads' | 'tags' | 'campaigns' | 'templates';
 
 export default function App({ initial, onLogout }: { initial: AppState; onLogout: () => void }) {
   const [state, setState] = useState(initial);
@@ -16,6 +17,8 @@ export default function App({ initial, onLogout }: { initial: AppState; onLogout
   const [toast, setToast] = useState<string | null>(null);
 
   const refresh = useCallback(async () => setState(await api.state()), []);
+  // Tag chips everywhere use the colours of the business's own tags.
+  setTagColors(state.tag_defs ?? []);
 
   // Pick up messages the server has sent in the meantime.
   useEffect(() => {
@@ -23,9 +26,10 @@ export default function App({ initial, onLogout }: { initial: AppState; onLogout
     return () => window.clearInterval(id);
   }, [refresh]);
 
-  const scheduled = state.messages.filter((m) => m.status === 'scheduled').length;
+  const scheduled = state.messages.filter((m) => m.status === 'scheduled' && m.campaign_id).length;
   const tabs: Array<{ id: Tab; label: string; icon: React.ElementType; badge?: number }> = [
     { id: 'leads', label: 'Leads', icon: Users, badge: state.leads.length },
+    { id: 'tags', label: 'Tags', icon: Tags },
     { id: 'campaigns', label: 'Campaigns', icon: CalendarClock, badge: scheduled || undefined },
     { id: 'templates', label: 'Templates', icon: FileText },
   ];
@@ -80,10 +84,23 @@ export default function App({ initial, onLogout }: { initial: AppState; onLogout
             messages={state.messages}
             campaigns={state.campaigns}
             chats={state.chats ?? []}
+            tagDefs={state.tag_defs ?? []}
+            sequences={state.sequences ?? []}
             sendingEnabled={state.whatsapp.sending}
             onChanged={refresh}
             onToast={setToast}
             onSendTemplate={(ids) => setComposeFor(ids)}
+          />
+        )}
+        {tab === 'tags' && (
+          <TagsPage
+            leads={state.leads}
+            messages={state.messages}
+            tagDefs={state.tag_defs ?? []}
+            sequences={state.sequences ?? []}
+            templatesEnabled={state.whatsapp.templates}
+            onChanged={refresh}
+            onToast={setToast}
           />
         )}
         {tab === 'campaigns' && (

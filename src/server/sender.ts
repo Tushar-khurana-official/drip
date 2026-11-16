@@ -44,15 +44,18 @@ export async function runDue(store: Store, send: Sender, now = new Date()) {
         continue;
       }
       const lead = doc.leads.find((l) => l.id === m.lead_id);
-      const campaign = doc.campaigns.find((c) => c.id === m.campaign_id);
+      // Template details come from the campaign, or from the automation step.
+      const src = m.sequence_id
+        ? doc.sequences?.find((x) => x.id === m.sequence_id)?.steps.find((x) => x.id === m.step_id)
+        : doc.campaigns.find((c) => c.id === m.campaign_id);
       m.status = 'sending';
       m.claimed_at = nowIso;
-      if (!lead || !campaign) out.push({ msg: m, payload: null, error: 'Lead or campaign was deleted' });
+      if (!lead || !src) out.push({ msg: m, payload: null, error: m.sequence_id ? 'Automation step was deleted' : 'Lead or campaign was deleted' });
       else if (!lead.opted_in_at) out.push({ msg: m, payload: null, error: 'Lead has not opted in' });
       else {
-        const p = renderPreview(campaign.template, campaign.mapping, lead);
+        const p = renderPreview(src.template, src.mapping, lead);
         const text = [p.header, p.body, p.footer].filter(Boolean).join('\n\n');
-        out.push({ msg: { ...m }, payload: buildTemplatePayload(campaign.template, campaign.mapping, lead, campaign.header_media_url), text });
+        out.push({ msg: { ...m }, payload: buildTemplatePayload(src.template, src.mapping, lead, src.header_media_url), text });
       }
     }
     return out;

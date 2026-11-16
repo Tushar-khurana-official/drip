@@ -1,6 +1,8 @@
 import React, { useMemo, useState } from 'react';
 import { CheckSquare, MessageCircle, Pencil, Plus, Search, Send, ShieldCheck, Tag as TagIcon, Trash2, Upload } from 'lucide-react';
-import type { Campaign, ChatEntry, Lead, LeadStatus, Message } from '../types';
+import type { Campaign, ChatEntry, Lead, LeadStatus, Message, Sequence, TagDef } from '../types';
+import { nextAutomated } from '../lib/automation';
+import { formatWhen } from './ui';
 import { LeadChat } from './LeadChat';
 import { allTags, filterLeads, formatPhone, LEAD_STATUSES, normalizePhone, normalizeTags, parseCsv, rowsToLeads, STATUS_LABEL } from '../lib/leads';
 import { api, ApiError } from '../services/api';
@@ -11,13 +13,15 @@ interface Props {
   messages: Message[];
   campaigns: Campaign[];
   chats: ChatEntry[];
+  tagDefs: TagDef[];
+  sequences: Sequence[];
   sendingEnabled: boolean;
   onChanged: () => Promise<void>;
   onToast: (t: string) => void;
   onSendTemplate: (leadIds: string[]) => void;
 }
 
-export function LeadsPage({ leads, messages, campaigns, chats, sendingEnabled, onChanged, onToast, onSendTemplate }: Props) {
+export function LeadsPage({ leads, messages, campaigns, chats, tagDefs, sequences, sendingEnabled, onChanged, onToast, onSendTemplate }: Props) {
   const [chatFor, setChatFor] = useState<string | null>(null);
   /** Latest chat activity per lead, for the preview line and the "new reply" dot. */
   const lastActivity = useMemo(() => {
@@ -40,6 +44,8 @@ export function LeadsPage({ leads, messages, campaigns, chats, sendingEnabled, o
   const [bulkTag, setBulkTag] = useState('');
 
   const tagCounts = useMemo(() => allTags(leads), [leads]);
+  /** Tags to suggest: the business's own tags first, then any other tag in use. */
+  const tagSuggestions = useMemo(() => [...new Set([...tagDefs.map((d) => d.name), ...tagCounts.map((t) => t.tag)])], [tagDefs, tagCounts]);
   const visible = useMemo(() => filterLeads(leads, { query, tags, tagMode, status }), [leads, query, tags, tagMode, status]);
   const pending = useMemo(() => {
     const m = new Map<string, number>();
@@ -213,6 +219,15 @@ export function LeadsPage({ leads, messages, campaigns, chats, sendingEnabled, o
                     </select>
                     {!l.opted_in_at && <span className="text-xs font-medium px-1.5 py-0.5 rounded-md bg-rose-50 text-rose-700">Not opted in</span>}
                     {(pending.get(l.id) ?? 0) > 0 && <span className="text-xs font-medium px-1.5 py-0.5 rounded-md bg-amber-50 text-amber-800">{pending.get(l.id)} scheduled</span>}
+                    {(() => {
+                      const next = nextAutomated(messages, l.id);
+                      const seq = next && sequences.find((x) => x.id === next.sequence_id);
+                      return next ? (
+                        <span className="text-xs font-medium px-1.5 py-0.5 rounded-md bg-emerald-50 text-emerald-700" title={`Automation for "${seq?.tag ?? ''}"`}>
+                          ⚡ next {formatWhen(next.send_at)}
+                        </span>
+                      ) : null;
+                    })()}
                   </div>
                   <p className="text-xs text-slate-500">
                     {formatPhone(l.phone)}
@@ -250,8 +265,8 @@ export function LeadsPage({ leads, messages, campaigns, chats, sendingEnabled, o
       </div>
 
       <datalist id="tag-list">
-        {tagCounts.map((t) => (
-          <option key={t.tag} value={t.tag} />
+        {tagSuggestions.map((t) => (
+          <option key={t} value={t} />
         ))}
       </datalist>
 
@@ -260,6 +275,7 @@ export function LeadsPage({ leads, messages, campaigns, chats, sendingEnabled, o
           lead={leads.find((l) => l.id === chatFor)!}
           messages={messages}
           campaigns={campaigns}
+          sequences={sequences}
           chats={chats}
           sendingEnabled={sendingEnabled}
           onClose={() => setChatFor(null)}
@@ -273,7 +289,7 @@ export function LeadsPage({ leads, messages, campaigns, chats, sendingEnabled, o
       {editing && (
         <LeadForm
           lead={editing === 'new' ? null : editing}
-          tagSuggestions={tagCounts.map((t) => t.tag)}
+          tagSuggestions={tagSuggestions}
           onClose={() => setEditing(null)}
           onSaved={async (msg) => {
             setEditing(null);

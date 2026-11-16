@@ -20,7 +20,30 @@ const TAG_COLORS = [
   'bg-violet-50 text-violet-700 ring-violet-200',
   'bg-teal-50 text-teal-700 ring-teal-200',
 ];
+const NAMED: Record<string, string> = {
+  indigo: 'bg-indigo-50 text-indigo-700 ring-indigo-200',
+  emerald: 'bg-emerald-50 text-emerald-700 ring-emerald-200',
+  amber: 'bg-amber-50 text-amber-800 ring-amber-200',
+  rose: 'bg-rose-50 text-rose-700 ring-rose-200',
+  sky: 'bg-sky-50 text-sky-700 ring-sky-200',
+  violet: 'bg-violet-50 text-violet-700 ring-violet-200',
+  teal: 'bg-teal-50 text-teal-700 ring-teal-200',
+  orange: 'bg-orange-50 text-orange-700 ring-orange-200',
+  slate: 'bg-slate-100 text-slate-700 ring-slate-300',
+};
+/** Solid swatch for the colour picker. */
+export const SWATCH: Record<string, string> = {
+  indigo: 'bg-indigo-500', emerald: 'bg-emerald-500', amber: 'bg-amber-400', rose: 'bg-rose-500', sky: 'bg-sky-500',
+  violet: 'bg-violet-500', teal: 'bg-teal-500', orange: 'bg-orange-500', slate: 'bg-slate-500',
+};
+/** Colours of the business's own tags (set by App from the server state). */
+let defined = new Map<string, string>();
+export function setTagColors(defs: Array<{ name: string; color: string }>) {
+  defined = new Map(defs.map((d) => [d.name, d.color]));
+}
 export function tagColor(tag: string) {
+  const c = defined.get(tag);
+  if (c && NAMED[c]) return NAMED[c];
   let h = 0;
   for (const ch of tag) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
   return TAG_COLORS[h % TAG_COLORS.length];

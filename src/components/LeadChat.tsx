@@ -1,13 +1,13 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { AlertCircle, Check, CheckCheck, Clock, MessageSquareText, Send, StickyNote, Trash2, X } from 'lucide-react';
-import type { Campaign, ChatEntry, Lead, Message } from '../types';
+import type { Campaign, ChatEntry, Lead, Message, Sequence } from '../types';
 import { formatPhone, STATUS_LABEL } from '../lib/leads';
 import { renderPreview } from '../lib/templates';
 import { api, ApiError } from '../services/api';
 import { cls, STATUS_STYLE, Tag } from './ui';
 
 type Item =
-  | { kind: 'template'; at: string; msg: Message; campaign?: Campaign; text: string }
+  | { kind: 'template'; at: string; msg: Message; label: string; text: string }
   | { kind: 'chat'; at: string; entry: ChatEntry };
 
 const day = (iso: string) => new Date(iso).toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' });
@@ -26,6 +26,7 @@ interface Props {
   lead: Lead;
   messages: Message[];
   campaigns: Campaign[];
+  sequences: Sequence[];
   chats: ChatEntry[];
   sendingEnabled: boolean;
   onClose: () => void;
@@ -34,7 +35,7 @@ interface Props {
 }
 
 /** Everything that happened with one lead, as a WhatsApp-style chat. */
-export function LeadChat({ lead, messages, campaigns, chats, sendingEnabled, onClose, onChanged, onSendTemplate }: Props) {
+export function LeadChat({ lead, messages, campaigns, sequences, chats, sendingEnabled, onClose, onChanged, onSendTemplate }: Props) {
   const [mode, setMode] = useState<'note' | 'reply'>('note');
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
@@ -51,13 +52,15 @@ export function LeadChat({ lead, messages, campaigns, chats, sendingEnabled, onC
     const list: Item[] = [];
     for (const m of messages) {
       if (m.lead_id !== lead.id) continue;
-      const c = byCampaign.get(m.campaign_id);
+      const seq = m.sequence_id ? sequences.find((x) => x.id === m.sequence_id) : undefined;
+      const src = seq ? seq.steps.find((x) => x.id === m.step_id) : byCampaign.get(m.campaign_id);
       let t = m.text;
-      if (!t && c) {
-        const p = renderPreview(c.template, c.mapping, lead);
+      if (!t && src) {
+        const p = renderPreview(src.template, src.mapping, lead);
         t = [p.header, p.body, p.footer].filter(Boolean).join('\n\n');
       }
-      list.push({ kind: 'template', at: m.sent_at ?? m.send_at, msg: m, campaign: c, text: t ?? '' });
+      const label = seq ? `⚡ Automation · ${seq.tag}` : `Template · ${src?.template.name ?? 'deleted'}`;
+      list.push({ kind: 'template', at: m.sent_at ?? m.send_at, msg: m, label, text: t ?? '' });
     }
     for (const e of chats) if (e.lead_id === lead.id) list.push({ kind: 'chat', at: e.at, entry: e });
     return list.sort((a, b) => a.at.localeCompare(b.at));
@@ -145,7 +148,7 @@ export function LeadChat({ lead, messages, campaigns, chats, sendingEnabled, onC
                   <div className="flex justify-end">
                     <div className={`max-w-[85%] rounded-lg rounded-tr-none px-3 py-2 shadow-sm ${m.status === 'cancelled' ? 'bg-slate-100 opacity-70' : 'bg-[#d9fdd3]'}`}>
                       <p className="text-[11px] font-semibold text-emerald-800 mb-0.5">
-                        Template · {it.campaign?.template.name ?? 'deleted'}
+                        {it.label}
                         {m.status === 'scheduled' && ` · scheduled`}
                         {m.status === 'cancelled' && ` · cancelled`}
                       </p>

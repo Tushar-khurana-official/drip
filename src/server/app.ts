@@ -21,10 +21,13 @@ import {
 import { getStore } from './store.js';
 import { fetchTemplates, sendMessage, textPayload, waConfig } from './whatsapp.js';
 import { applyWebhook, canReply, parseWebhook, signatureOk, webhookKeyOk } from './webhook.js';
+import { applyAutomations, enroll, snapshotLeads, stopAutomation } from '../lib/automation.js';
+import type { Store } from './store.js';
 import { sendDueNow } from './sender.js';
 import { LEAD_STATUSES, normalizePhone, normalizeTags } from '../lib/leads.js';
 import { buildTemplatePayload, mappingProblems, templateVariables } from '../lib/templates.js';
-import type { Campaign, ChatEntry, Lead, LeadStatus, Message, VarSource, WaTemplate } from '../types.js';
+import { TAG_COLORS } from '../types.js';
+import type { Campaign, ChatEntry, DripDoc, Lead, LeadStatus, Message, Sequence, SequenceStep, TagColor, VarSource, WaTemplate } from '../types.js';
 
 dotenv.config();
 
@@ -64,6 +67,18 @@ type Handler = (req: Request, res: Response) => Promise<unknown>;
 const wrap = (h: Handler) => (req: Request, res: Response, next: NextFunction) => h(req, res).catch(next);
 
 class BadRequest extends Error {}
+
+/** Change leads and then start / stop tag automations for whatever changed (one atomic update). */
+function mutateLeads<T>(store: Store, fn: (doc: DripDoc) => T): Promise<T> {
+  return store.mutate((doc) => {
+    doc.sequences ??= [];
+    const before = snapshotLeads(doc);
+    const out = fn(doc);
+    const r = applyAutomations(doc, before, new Date(), id);
+    if (r.started || r.stopped) log('automations', r);
+    return out;
+  });
+}
 
 /* --------------------------------- auth --------------------------------- */
 
@@ -141,7 +156,7 @@ function leadInput(b: Record<string, unknown>, partial = false): Partial<Lead> {
 app.post('/api/leads', requireLogin, wrap(async (req, res) => {
   const input = leadInput(req.body ?? {});
   const store = await getStore();
-  const lead = await store.mutate((doc) => {
+  const lead = await mutateLeads(store, (doc) => {
     if (doc.leads.some((l) => l.phone === input.phone)) throw new BadRequest('A lead with this number already exists');
     const now = new Date().toISOString();
     const l: Lead = {
@@ -157,7 +172,7 @@ app.post('/api/leads', requireLogin, wrap(async (req, res) => {
 app.patch('/api/leads/:id', requireLogin, wrap(async (req, res) => {
   const input = leadInput(req.body ?? {}, true);
   const store = await getStore();
-  const lead = await store.mutate((doc) => {
+  const lead = await mutateLeads(store, (doc) => {
     const l = doc.leads.find((x) => x.id === req.params.id);
     if (!l) throw new BadRequest('Lead not found');
     if (input.phone && doc.leads.some((x) => x.phone === input.phone && x.id !== l.id)) throw new BadRequest('Another lead has this number');
@@ -191,7 +206,7 @@ app.post('/api/leads/bulk', requireLogin, wrap(async (req, res) => {
   const status = req.body?.status as LeadStatus | undefined;
   if (status && !LEAD_STATUSES.includes(status)) throw new BadRequest('Bad status');
   const store = await getStore();
-  const changed = await store.mutate((doc) => {
+  const changed = await mutateLeads(store, (doc) => {
     if (req.body?.delete) {
       const before = doc.leads.length;
       doc.leads = doc.leads.filter((l) => !ids.has(l.id));
@@ -224,7 +239,7 @@ app.post('/api/leads/import', requireLogin, wrap(async (req, res) => {
   const optedIn = Boolean(req.body?.opted_in);
   const source = str(req.body?.source, 120) || 'Import';
   const store = await getStore();
-  const result = await store.mutate((doc) => {
+  const result = await mutateLeads(store, (doc) => {
     const byPhone = new Map(doc.leads.map((l) => [l.phone, l]));
     const now = new Date().toISOString();
     let created = 0, updated = 0, invalid = 0;
@@ -321,10 +336,138 @@ app.post('/api/webhook/whatsapp', wrap(async (req, res) => {
   const events = parseWebhook(req.body);
   if (events.messages.length || events.statuses.length) {
     const store = await getStore();
-    const r = await store.mutate((doc) => applyWebhook(doc, events, id));
-    log('webhook', r);
+    const r = await mutateLeads(store, (doc) => {
+      const res = applyWebhook(doc, events, id);
+      // Automations set to stop when the lead replies.
+      for (const leadId of res.repliedLeadIds) {
+        for (const seq of doc.sequences ?? []) if (seq.stop_on_reply) stopAutomation(doc, leadId, 'Lead replied', seq.tag);
+      }
+      return res;
+    });
+    log('webhook', { messages: r.messages, statuses: r.statuses, newLeads: r.newLeads });
   }
   return res.json({ ok: true });
+}));
+
+/* ------------------------- tags and automations ------------------------- */
+
+function tagInput(b: Record<string, unknown>) {
+  const name = normalizeTags(String(b.name ?? ''))[0];
+  if (!name) throw new BadRequest('Tag name is required');
+  const color = (TAG_COLORS as readonly string[]).includes(String(b.color)) ? (b.color as TagColor) : 'indigo';
+  return { name, color, description: str(b.description, 300) };
+}
+
+app.post('/api/tags', requireLogin, wrap(async (req, res) => {
+  const t = tagInput(req.body ?? {});
+  const store = await getStore();
+  await store.mutate((doc) => {
+    doc.tag_defs ??= [];
+    if (doc.tag_defs.some((d) => d.name === t.name)) throw new BadRequest('This tag already exists');
+    doc.tag_defs.push({ ...t, created_at: new Date().toISOString() });
+  });
+  res.json({ ok: true });
+}));
+
+/** Edit a tag: colour, description, or rename (renames it on every lead and its automation too). */
+app.put('/api/tags/:name', requireLogin, wrap(async (req, res) => {
+  const t = tagInput(req.body ?? {});
+  const old = req.params.name;
+  const store = await getStore();
+  await store.mutate((doc) => {
+    doc.tag_defs ??= [];
+    if (t.name !== old && (doc.tag_defs.some((d) => d.name === t.name) || (doc.sequences ?? []).some((s) => s.tag === t.name))) {
+      throw new BadRequest('A tag with that name already exists');
+    }
+    const def = doc.tag_defs.find((d) => d.name === old);
+    if (def) Object.assign(def, t);
+    else doc.tag_defs.push({ ...t, created_at: new Date().toISOString() });
+    if (t.name !== old) {
+      for (const l of doc.leads) if (l.tags.includes(old)) l.tags = normalizeTags(l.tags.map((x) => (x === old ? t.name : x)));
+      for (const s of doc.sequences ?? []) if (s.tag === old) s.tag = t.name;
+    }
+  });
+  res.json({ ok: true });
+}));
+
+/** Delete a tag: removes it from all leads and cancels its automation. */
+app.delete('/api/tags/:name', requireLogin, wrap(async (req, res) => {
+  const name = req.params.name;
+  const store = await getStore();
+  await mutateLeads(store, (doc) => {
+    doc.tag_defs = (doc.tag_defs ?? []).filter((d) => d.name !== name);
+    for (const l of doc.leads) l.tags = l.tags.filter((t) => t !== name);
+  });
+  // The diff above cancelled pending messages; now drop the automation itself.
+  await store.mutate((doc) => {
+    doc.sequences = (doc.sequences ?? []).filter((s) => s.tag !== name);
+  });
+  res.json({ ok: true });
+}));
+
+/**
+ * Save the automation for a tag. Steps are validated against the approved templates.
+ * Leads already in the automation keep their send times; edits to a step's message apply to their
+ * pending messages too.
+ */
+app.put('/api/sequences/:tag', requireLogin, wrap(async (req, res) => {
+  const tag = normalizeTags(req.params.tag)[0];
+  if (!tag) throw new BadRequest('Bad tag');
+  const b = req.body ?? {};
+  const rawSteps = Array.isArray(b.steps) ? (b.steps as Array<Record<string, unknown>>) : [];
+  if (rawSteps.length > 20) throw new BadRequest('At most 20 messages per automation');
+  const steps: SequenceStep[] = [];
+  for (const [i, r] of rawSteps.entries()) {
+    const t = await approvedTemplate(r.template_name, r.template_language);
+    const mapping = parseMapping(r.mapping, t);
+    const media = str(r.header_media_url, 1000) || null;
+    const problems = mappingProblems(t, mapping, media);
+    if (problems.length) throw new BadRequest(`Message ${i + 1}: ${problems.join('; ')}`);
+    const days = Number(r.delay_days);
+    if (!Number.isInteger(days) || days < 0 || days > 365) throw new BadRequest(`Message ${i + 1}: days must be 0–365`);
+    const time = String(r.time ?? '10:00');
+    if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(time)) throw new BadRequest(`Message ${i + 1}: pick a time`);
+    steps.push({ id: typeof r.id === 'string' && r.id ? r.id : id('step'), delay_days: days, time, template: t, mapping, header_media_url: media });
+  }
+  const store = await getStore();
+  const seq = await store.mutate((doc) => {
+    doc.sequences ??= [];
+    let s = doc.sequences.find((x) => x.tag === tag);
+    const now = new Date().toISOString();
+    if (!s) {
+      s = { id: id('seq'), tag, enabled: true, stop_on_reply: true, steps: [], updated_at: now } as Sequence;
+      doc.sequences.push(s);
+    }
+    s.steps = steps;
+    s.enabled = b.enabled !== false;
+    s.stop_on_reply = b.stop_on_reply !== false;
+    s.updated_at = now;
+    // Pending messages for steps that no longer exist, or when the automation is switched off, are cancelled.
+    const stepIds = new Set(steps.map((x) => x.id));
+    for (const m of doc.messages) {
+      if (m.sequence_id === s.id && m.status === 'scheduled' && (!s.enabled || !stepIds.has(m.step_id ?? ''))) {
+        m.status = 'cancelled';
+        m.error = s.enabled ? 'Step removed from automation' : 'Automation switched off';
+      }
+    }
+    doc.tag_defs ??= [];
+    if (!doc.tag_defs.some((d) => d.name === tag)) doc.tag_defs.push({ name: tag, color: 'indigo', description: '', created_at: now });
+    return s;
+  });
+  res.json({ sequence: seq });
+}));
+
+/** Start the automation now for leads that already have the tag (it normally starts when the tag is added). */
+app.post('/api/sequences/:tag/start-existing', requireLogin, wrap(async (req, res) => {
+  const tag = req.params.tag;
+  const store = await getStore();
+  const n = await store.mutate((doc) => {
+    let started = 0;
+    const now = new Date();
+    for (const l of doc.leads) if (l.tags.includes(tag) && enroll(doc, l, tag, now, id)) started++;
+    return started;
+  });
+  res.json({ started: n });
 }));
 
 /* ------------------------------ templates ------------------------------ */

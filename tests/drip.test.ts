@@ -398,3 +398,100 @@ test('chat: notes saved and deletable; reply only within 24 h; statuses update t
   assert.equal((await call('DELETE', `/api/chats/${yes.json.entry.id}`)).status, 400);
   assert.equal((await call('DELETE', `/api/chats/${note.json.entry.id}`)).status, 200);
 });
+
+/* ------------------------------ tag automations ------------------------------ */
+
+test('automation timing: days later at a fixed India time, never in the past', async () => {
+  const A = await import('../src/lib/automation');
+  // 14 Nov 2026 15:00 IST = 09:30 UTC
+  const tagged = new Date('2026-11-14T09:30:00Z');
+  assert.equal(A.stepTime(tagged, 3, '10:00').toISOString(), '2026-11-17T04:30:00.000Z'); // 17 Nov 10:00 IST
+  // late evening IST that is still "yesterday" in UTC: 14 Nov 23:30 IST = 18:00 UTC
+  assert.equal(A.stepTime(new Date('2026-11-14T18:00:00Z'), 1, '09:00').toISOString(), '2026-11-15T03:30:00.000Z');
+  const plan = A.planSteps({ steps: [
+    { id: 'a', delay_days: 0, time: '10:00' }, // already past 10:00 today -> a minute from now
+    { id: 'b', delay_days: 3, time: '10:00' },
+    { id: 'c', delay_days: 4, time: '18:30' },
+  ] as any }, tagged);
+  assert.equal(plan[0].at.toISOString(), '2026-11-14T09:31:00.000Z');
+  assert.equal(plan[1].at.toISOString(), '2026-11-17T04:30:00.000Z');
+  assert.equal(plan[2].at.toISOString(), '2026-11-21T13:00:00.000Z'); // 21 Nov 18:30 IST
+});
+
+test('tags: create with colour, rename moves it on leads, delete removes it', async () => {
+  assert.equal((await call('POST', '/api/tags', { name: 'Follow Up', color: 'rose', description: 'Needs a call' })).status, 200);
+  assert.equal((await call('POST', '/api/tags', { name: 'follow up' })).status, 400); // duplicate
+  const a = await call('POST', '/api/leads', { name: 'Tag Test', phone: '9822200001', tags: ['follow up'] });
+  assert.equal((await call('PUT', '/api/tags/follow%20up', { name: 'callback', color: 'amber', description: 'x' })).status, 200);
+  let st = await call('GET', '/api/state');
+  assert.deepEqual(st.json.leads.find((l: any) => l.id === a.json.lead.id).tags, ['callback']);
+  assert.equal(st.json.tag_defs.find((d: any) => d.name === 'callback').color, 'amber');
+  assert.equal((await call('DELETE', '/api/tags/callback')).status, 200);
+  st = await call('GET', '/api/state');
+  assert.deepEqual(st.json.leads.find((l: any) => l.id === a.json.lead.id).tags, []);
+});
+
+test('automation: adding the tag schedules all steps; removing tag / reply / converted stops them', async () => {
+  const step = (days: number, time: string) => ({
+    template_name: 'appointment_reminder', template_language: 'en', delay_days: days, time,
+    mapping: { 'header.1': { kind: 'first_name' }, 'body.1': { kind: 'first_name' }, 'body.2': { kind: 'text', text: 'Clinic' }, 'body.3': { kind: 'text', text: 'soon' }, 'button.0.1': { kind: 'text', text: 'x' } },
+  });
+  const bad = await call('PUT', '/api/sequences/new%20patient', { steps: [{ ...step(3, '10:00'), template_name: 'draft_one' }] });
+  assert.equal(bad.status, 400); // pending template
+  const ok = await call('PUT', '/api/sequences/new%20patient', { steps: [step(3, '10:00'), step(4, '18:00')] });
+  assert.equal(ok.status, 200, JSON.stringify(ok.json));
+  const seqId = ok.json.sequence.id;
+
+  const pending = async (leadId: string) => (await call('GET', '/api/state')).json.messages.filter((m: any) => m.lead_id === leadId && m.sequence_id === seqId);
+
+  // 1. opted-in lead gets the tag -> 2 messages scheduled, 3 days and 7 days out
+  const l1 = (await call('POST', '/api/leads', { name: 'Auto One', phone: '9833300001', opted_in: true })).json.lead;
+  await call('POST', '/api/leads/bulk', { ids: [l1.id], add_tags: ['new patient'] });
+  let ms = await pending(l1.id);
+  assert.equal(ms.length, 2);
+  const days = (iso: string) => (Date.parse(iso) - Date.now()) / 86400_000;
+  assert.ok(days(ms[0].send_at) > 2 && days(ms[0].send_at) < 4, ms[0].send_at);
+  assert.ok(days(ms[1].send_at) > 6 && days(ms[1].send_at) < 8, ms[1].send_at);
+  // adding the tag again does not double it
+  await call('PATCH', `/api/leads/${l1.id}`, { tags: ['new patient', 'vip'] });
+  assert.equal((await pending(l1.id)).filter((m: any) => m.status === 'scheduled').length, 2);
+  // removing the tag cancels
+  await call('POST', '/api/leads/bulk', { ids: [l1.id], remove_tags: ['new patient'] });
+  ms = await pending(l1.id);
+  assert.ok(ms.every((m: any) => m.status === 'cancelled'));
+  assert.match(ms[0].error, /removed/);
+
+  // 2. not opted in -> nothing; opting in later starts it
+  const l2 = (await call('POST', '/api/leads', { name: 'Auto Two', phone: '9833300002', tags: ['new patient'] })).json.lead;
+  assert.equal((await pending(l2.id)).length, 0);
+  await call('PATCH', `/api/leads/${l2.id}`, { opted_in: true });
+  assert.equal((await pending(l2.id)).length, 2);
+  // converted -> stops
+  await call('PATCH', `/api/leads/${l2.id}`, { status: 'converted' });
+  assert.ok((await pending(l2.id)).every((m: any) => m.status === 'cancelled'));
+
+  // 3. import with the tag starts it; the lead replying stops it
+  await call('POST', '/api/leads/import', { rows: [{ name: 'Auto Three', phone: '9833300003', tags: ['new patient'] }], tags: [], opted_in: true });
+  const l3 = (await call('GET', '/api/state')).json.leads.find((l: any) => l.phone === '919833300003');
+  assert.equal((await pending(l3.id)).length, 2);
+  await call('POST', '/api/webhook/whatsapp?key=hook-key', hook({ messages: [{ id: 'wamid.auto3', from: '919833300003', timestamp: String(Math.floor(Date.now() / 1000)), type: 'text', text: { body: 'ok' } }] }), false);
+  ms = await pending(l3.id);
+  assert.ok(ms.every((m: any) => m.status === 'cancelled'));
+  assert.equal(ms[0].error, 'Lead replied');
+
+  // 4. the sender sends an automation step when it is due
+  const l4 = (await call('POST', '/api/leads', { name: 'Auto Four', phone: '9833300004', opted_in: true, tags: ['new patient'] })).json.lead;
+  const store = await ST.getStore();
+  const before = sent.length;
+  const first = (await pending(l4.id)).sort((a: any, b: any) => a.send_at.localeCompare(b.send_at))[0];
+  await S.runDue(store, W.sendMessage, new Date(Date.parse(first.send_at) + 60_000));
+  assert.equal(sent.length, before + 1);
+  assert.equal(sent.at(-1).to, '919833300004');
+  ms = await pending(l4.id);
+  assert.equal(ms.filter((m: any) => m.status === 'sent').length, 1);
+  assert.ok(ms.find((m: any) => m.status === 'sent').text.includes('Dear Auto'));
+
+  // switching the automation off cancels what is pending
+  await call('PUT', '/api/sequences/new%20patient', { enabled: false, steps: [step(3, '10:00'), step(4, '18:00')] });
+  assert.ok((await pending(l4.id)).filter((m: any) => m.status === 'scheduled').length === 0);
+});

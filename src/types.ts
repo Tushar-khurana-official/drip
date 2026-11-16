@@ -76,7 +76,11 @@ export type MessageStatus = 'scheduled' | 'sending' | 'sent' | 'failed' | 'cance
 /** One template message to one lead. */
 export interface Message {
   id: string;
+  /** Campaign that created it, or "" for automation messages. */
   campaign_id: string;
+  /** Set when the message comes from a tag automation. */
+  sequence_id?: string;
+  step_id?: string;
   lead_id: string;
   send_at: string;
   status: MessageStatus;
@@ -114,6 +118,42 @@ export interface ChatEntry {
   error?: string;
 }
 
+/* ------------------------- tags and automations ------------------------- */
+
+export const TAG_COLORS = ['indigo', 'emerald', 'amber', 'rose', 'sky', 'violet', 'teal', 'orange', 'slate'] as const;
+export type TagColor = (typeof TAG_COLORS)[number];
+
+/** A tag the business defined (name, colour, what it means). Leads can still carry ad-hoc tags too. */
+export interface TagDef {
+  name: string;
+  color: TagColor;
+  description: string;
+  created_at: string;
+}
+
+/** One message in a tag automation. */
+export interface SequenceStep {
+  id: string;
+  /** Days to wait: after the tag is added (first step) or after the previous step. 0 = same day. */
+  delay_days: number;
+  /** Time of day to send, India time, "HH:MM". */
+  time: string;
+  template: WaTemplate;
+  mapping: Record<string, VarSource>;
+  header_media_url: string | null;
+}
+
+/** Messages sent automatically after a tag is added to a lead. */
+export interface Sequence {
+  id: string;
+  tag: string;
+  enabled: boolean;
+  /** Cancel the remaining steps when the lead replies on WhatsApp. */
+  stop_on_reply: boolean;
+  steps: SequenceStep[];
+  updated_at: string;
+}
+
 export interface BusinessSettings {
   name: string;
 }
@@ -124,4 +164,6 @@ export interface DripDoc {
   campaigns: Campaign[];
   messages: Message[];
   chats: ChatEntry[];
+  tag_defs: TagDef[];
+  sequences: Sequence[];
 }

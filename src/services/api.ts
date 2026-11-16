@@ -1,5 +1,5 @@
 /** Browser client for the Drip API. The session is an httpOnly cookie. */
-import type { BusinessSettings, Campaign, ChatEntry, Lead, LeadStatus, Message, VarSource, WaTemplate } from '../types';
+import type { BusinessSettings, Campaign, ChatEntry, Lead, LeadStatus, Message, Sequence, TagColor, TagDef, VarSource, WaTemplate } from '../types';
 
 export interface AppState {
   settings: BusinessSettings;
@@ -7,6 +7,8 @@ export interface AppState {
   campaigns: Campaign[];
   messages: Message[];
   chats: ChatEntry[];
+  tag_defs: TagDef[];
+  sequences: Sequence[];
   whatsapp: { sending: boolean; templates: boolean };
   storage_persistent: boolean;
 }
@@ -116,5 +118,11 @@ export const api = {
   addNote: (leadId: string, text: string) => call<{ entry: ChatEntry }>('POST', `/api/leads/${encodeURIComponent(leadId)}/notes`, { text }),
   deleteNote: (id: string) => call('DELETE', `/api/chats/${encodeURIComponent(id)}`),
   reply: (leadId: string, text: string) => call<{ entry: ChatEntry }>('POST', `/api/leads/${encodeURIComponent(leadId)}/reply`, { text }),
+  createTag: (t: { name: string; color: TagColor; description: string }) => call('POST', '/api/tags', t),
+  updateTag: (old: string, t: { name: string; color: TagColor; description: string }) => call('PUT', `/api/tags/${encodeURIComponent(old)}`, t),
+  deleteTag: (name: string) => call('DELETE', `/api/tags/${encodeURIComponent(name)}`),
+  saveSequence: (tag: string, b: { enabled: boolean; stop_on_reply: boolean; steps: Array<{ id?: string; delay_days: number; time: string; template_name: string; template_language: string; mapping: Record<string, VarSource>; header_media_url: string | null }> }) =>
+    call<{ sequence: Sequence }>('PUT', `/api/sequences/${encodeURIComponent(tag)}`, b),
+  startExisting: (tag: string) => call<{ started: number }>('POST', `/api/sequences/${encodeURIComponent(tag)}/start-existing`),
   sendDue: () => call<{ sent: number; failed: number }>('POST', '/api/send-due'),
 };
