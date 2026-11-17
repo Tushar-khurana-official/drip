@@ -515,3 +515,13 @@ test('webhook: gateway formats (array, data wrapper, bare value) are understood;
   assert.equal((await call('GET', '/api/webhook/recent', undefined, false)).status, 401);
   assert.equal((await call('GET', '/api/state')).json.webhook_log, undefined);
 });
+
+test('webhook: key can be part of the URL path', async () => {
+  const body = hook({ messages: [{ id: 'wamid.path1', from: '919800000077', timestamp: '1700000000', type: 'text', text: { body: 'via path' } }] });
+  assert.equal((await call('POST', '/api/webhook/whatsapp/wrong', body, false)).status, 403);
+  assert.equal((await call('POST', '/api/webhook/whatsapp/hook-key', body, false)).status, 200);
+  const st = await call('GET', '/api/state');
+  assert.ok(st.json.chats.some((c: any) => c.text === 'via path'));
+  const v = await fetch(base + '/api/webhook/whatsapp/hook-key?hub.mode=subscribe&hub.challenge=ok1');
+  assert.equal(await v.text(), 'ok1');
+});

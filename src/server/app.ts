@@ -325,13 +325,17 @@ app.post('/api/leads/:id/reply', requireLogin, wrap(async (req, res) => {
 /* ------------------------------- webhook ------------------------------- */
 
 // Meta's verification handshake (only needed if Meta calls Drip directly).
-app.get('/api/webhook/whatsapp', (req, res) => {
-  if (req.query['hub.mode'] === 'subscribe' && webhookKeyOk(req.query['hub.verify_token'])) return res.status(200).send(String(req.query['hub.challenge'] ?? ''));
+app.get(['/api/webhook/whatsapp', '/api/webhook/whatsapp/:key'], (req, res) => {
+  if (req.query['hub.mode'] === 'subscribe' && (webhookKeyOk(req.query['hub.verify_token']) || webhookKeyOk(req.params.key))) {
+    return res.status(200).send(String(req.query['hub.challenge'] ?? ''));
+  }
   return res.sendStatus(403);
 });
 
-app.post('/api/webhook/whatsapp', wrap(async (req, res) => {
-  const viaKey = webhookKeyOk(req.query.key);
+// The key can be in the address (/api/webhook/whatsapp/<key>) for providers that only take a plain URL,
+// or as ?key=<key>.
+app.post(['/api/webhook/whatsapp', '/api/webhook/whatsapp/:key'], wrap(async (req, res) => {
+  const viaKey = webhookKeyOk(req.params.key ?? req.query.key);
   const viaSignature = Boolean(process.env.WHATSAPP_APP_SECRET) && signatureOk((req as Request & { rawBody?: Buffer }).rawBody, req.headers['x-hub-signature-256']);
   if (!viaKey && !viaSignature) return res.status(403).json({ error: 'forbidden' });
   const events = parseWebhook(req.body);
