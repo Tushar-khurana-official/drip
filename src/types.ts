@@ -166,4 +166,6 @@ export interface DripDoc {
   chats: ChatEntry[];
   tag_defs: TagDef[];
   sequences: Sequence[];
+  /** Last webhook deliveries (raw), for checking what the provider sends. Never shown to anyone but the owner. */
+  webhook_log?: Array<{ at: string; messages: number; statuses: number; body: string }>;
 }

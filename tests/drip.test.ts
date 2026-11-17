@@ -495,3 +495,23 @@ test('automation: adding the tag schedules all steps; removing tag / reply / con
   await call('PUT', '/api/sequences/new%20patient', { enabled: false, steps: [step(3, '10:00'), step(4, '18:00')] });
   assert.ok((await pending(l4.id)).filter((m: any) => m.status === 'scheduled').length === 0);
 });
+
+test('webhook: gateway formats (array, data wrapper, bare value) are understood; recent deliveries are kept', async () => {
+  const W2 = await import('../src/server/webhook');
+  const value = { messages: [{ id: 'x1', from: '919800000009', timestamp: '1700000000', type: 'text', text: { body: 'hi' } }], statuses: [{ id: 'y1', status: 'read', timestamp: '1700000001' }] };
+  for (const body of [hook(value), [hook(value)], { data: hook(value) }, { field: 'messages', value }, value]) {
+    const ev = W2.parseWebhook(body);
+    assert.equal(ev.messages.length, 1, JSON.stringify(body).slice(0, 80));
+    assert.equal(ev.statuses.length, 1);
+  }
+  assert.equal(W2.parseWebhook({ hello: 'world' }).messages.length, 0);
+
+  await call('POST', '/api/webhook/whatsapp?key=hook-key', { something: 'unexpected' }, false);
+  const recent = await call('GET', '/api/webhook/recent');
+  assert.equal(recent.status, 200);
+  assert.equal(recent.json.configured, true);
+  assert.equal(recent.json.deliveries[0].messages, 0);
+  assert.match(recent.json.deliveries[0].body, /unexpected/);
+  assert.equal((await call('GET', '/api/webhook/recent', undefined, false)).status, 401);
+  assert.equal((await call('GET', '/api/state')).json.webhook_log, undefined);
+});

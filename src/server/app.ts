@@ -116,7 +116,8 @@ app.post('/api/auth/logout', (_req, res) => {
 app.get('/api/state', requireLogin, wrap(async (_req, res) => {
   const store = await getStore();
   res.setHeader('Cache-Control', 'no-store');
-  res.json({ ...(await store.read()), whatsapp: waConfig(), storage_persistent: store.persistent });
+  const { webhook_log: _log, ...doc } = await store.read();
+  res.json({ ...doc, whatsapp: waConfig(), storage_persistent: store.persistent });
 }));
 
 app.put('/api/settings', requireLogin, wrap(async (req, res) => {
@@ -334,8 +335,16 @@ app.post('/api/webhook/whatsapp', wrap(async (req, res) => {
   const viaSignature = Boolean(process.env.WHATSAPP_APP_SECRET) && signatureOk((req as Request & { rawBody?: Buffer }).rawBody, req.headers['x-hub-signature-256']);
   if (!viaKey && !viaSignature) return res.status(403).json({ error: 'forbidden' });
   const events = parseWebhook(req.body);
+  const store = await getStore();
+  // Keep the last few deliveries so the owner can check what the provider sends (GET /api/webhook/recent).
+  const sample = JSON.stringify(req.body ?? null);
+  await store.mutate((doc) => {
+    doc.webhook_log = [
+      { at: new Date().toISOString(), messages: events.messages.length, statuses: events.statuses.length, body: sample.length > 8000 ? sample.slice(0, 8000) + '…' : sample },
+      ...(doc.webhook_log ?? []),
+    ].slice(0, 10);
+  });
   if (events.messages.length || events.statuses.length) {
-    const store = await getStore();
     const r = await mutateLeads(store, (doc) => {
       const res = applyWebhook(doc, events, id);
       // Automations set to stop when the lead replies.
@@ -347,6 +356,14 @@ app.post('/api/webhook/whatsapp', wrap(async (req, res) => {
     log('webhook', { messages: r.messages, statuses: r.statuses, newLeads: r.newLeads });
   }
   return res.json({ ok: true });
+}));
+
+/** Last 10 webhook deliveries, newest first, with how many messages / statuses Drip understood in each. */
+app.get('/api/webhook/recent', requireLogin, wrap(async (_req, res) => {
+  const store = await getStore();
+  const doc = await store.read();
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({ configured: Boolean(process.env.WHATSAPP_WEBHOOK_KEY), deliveries: doc.webhook_log ?? [] });
 }));
 
 /* ------------------------- tags and automations ------------------------- */

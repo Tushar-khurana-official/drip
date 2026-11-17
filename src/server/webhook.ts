@@ -48,23 +48,34 @@ function describe(m: Record<string, any>): string {
   }
 }
 
-/** Pull messages and statuses out of a webhook body (one or many entries). */
+/**
+ * Pull messages and statuses out of a webhook body. Accepts Meta's format ({entry:[{changes:[{value}]}]})
+ * and the shapes gateways commonly forward: an array of those, {data: ...}, a bare change {field, value},
+ * or a bare value {messages, statuses, contacts}.
+ */
 export function parseWebhook(body: unknown): WebhookEvents {
   const out: WebhookEvents = { messages: [], statuses: [] };
-  const entries = (body as { entry?: unknown[] })?.entry ?? [];
-  for (const e of entries as Array<Record<string, any>>) {
-    for (const c of e?.changes ?? []) {
-      const v = c?.value ?? {};
-      const names = new Map<string, string>((v.contacts ?? []).map((x: any) => [String(x.wa_id), String(x.profile?.name ?? '')]));
-      for (const m of v.messages ?? []) {
-        if (!m?.from || !m?.id) continue;
-        out.messages.push({ wa_id: String(m.id), from: String(m.from), name: names.get(String(m.from)) || undefined, text: describe(m), type: String(m.type ?? 'text'), at: ts(m.timestamp) });
-      }
-      for (const s of v.statuses ?? []) {
-        if (!s?.id || !s?.status) continue;
-        const err = s.errors?.[0];
-        out.statuses.push({ wa_id: String(s.id), status: String(s.status), at: ts(s.timestamp), error: err ? String(err.error_data?.details || err.title || err.message || err.code) : undefined });
-      }
+  const values: Array<Record<string, any>> = [];
+  const visit = (x: unknown, depth = 0) => {
+    if (!x || typeof x !== 'object' || depth > 4) return;
+    if (Array.isArray(x)) return x.forEach((y) => visit(y, depth + 1));
+    const o = x as Record<string, any>;
+    if (Array.isArray(o.entry)) return o.entry.forEach((e: any) => (e?.changes ?? []).forEach((c: any) => visit(c?.value, depth + 1)));
+    if (o.value && typeof o.value === 'object' && !Array.isArray(o.value)) return visit(o.value, depth + 1);
+    if (Array.isArray(o.messages) || Array.isArray(o.statuses)) return void values.push(o);
+    for (const k of ['data', 'payload', 'body', 'webhook']) if (o[k] && typeof o[k] === 'object') return visit(o[k], depth + 1);
+  };
+  visit(body);
+  for (const v of values) {
+    const names = new Map<string, string>((v.contacts ?? []).map((x: any) => [String(x.wa_id), String(x.profile?.name ?? '')]));
+    for (const m of v.messages ?? []) {
+      if (!m?.from || !m?.id) continue;
+      out.messages.push({ wa_id: String(m.id), from: String(m.from), name: names.get(String(m.from)) || undefined, text: describe(m), type: String(m.type ?? 'text'), at: ts(m.timestamp) });
+    }
+    for (const st of v.statuses ?? []) {
+      if (!st?.id || !st?.status) continue;
+      const err = st.errors?.[0];
+      out.statuses.push({ wa_id: String(st.id), status: String(st.status), at: ts(st.timestamp), error: err ? String(err.error_data?.details || err.title || err.message || err.code) : undefined });
     }
   }
   return out;
