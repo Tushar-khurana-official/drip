@@ -363,7 +363,7 @@ app.get('/api/webhook/recent', requireLogin, wrap(async (_req, res) => {
   const store = await getStore();
   const doc = await store.read();
   res.setHeader('Cache-Control', 'no-store');
-  res.json({ configured: Boolean(process.env.WHATSAPP_WEBHOOK_KEY), deliveries: doc.webhook_log ?? [] });
+  res.json({ configured: Boolean(process.env.WHATSAPP_WEBHOOK_KEY?.trim()), deliveries: doc.webhook_log ?? [] });
 }));
 
 /* ------------------------- tags and automations ------------------------- */

@@ -16,6 +16,8 @@ export function waConfig() {
   return {
     sending: Boolean(process.env.WHATSAPP_TOKEN && process.env.WHATSAPP_PHONE_NUMBER_ID),
     templates: Boolean(process.env.WHATSAPP_TOKEN && process.env.WHATSAPP_WABA_ID),
+    /** Incoming replies / ticks: WHATSAPP_WEBHOOK_KEY is set. */
+    webhook: Boolean(process.env.WHATSAPP_WEBHOOK_KEY?.trim()),
   };
 }
 

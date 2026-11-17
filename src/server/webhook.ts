@@ -132,9 +132,9 @@ export function applyWebhook(doc: DripDoc, ev: WebhookEvents, makeId: (p: string
 }
 
 export function webhookKeyOk(key: unknown): boolean {
-  const want = process.env.WHATSAPP_WEBHOOK_KEY;
+  const want = process.env.WHATSAPP_WEBHOOK_KEY?.trim();
   if (!want || typeof key !== 'string') return false;
-  const a = crypto.createHash('sha256').update(key).digest();
+  const a = crypto.createHash('sha256').update(key.trim()).digest();
   const b = crypto.createHash('sha256').update(want).digest();
   return crypto.timingSafeEqual(a, b);
 }

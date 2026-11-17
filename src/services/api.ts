@@ -9,7 +9,7 @@ export interface AppState {
   chats: ChatEntry[];
   tag_defs: TagDef[];
   sequences: Sequence[];
-  whatsapp: { sending: boolean; templates: boolean };
+  whatsapp: { sending: boolean; templates: boolean; webhook?: boolean };
   storage_persistent: boolean;
 }
 
