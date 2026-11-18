@@ -15,6 +15,8 @@ export type AuthedRequest = Request & { session?: Session };
 
 const COOKIE = 'drip_session';
 const MAX_AGE_S = 30 * 24 * 3600;
+/** Without "keep me signed in": the cookie ends when the browser closes, and the token after 12 hours anyway. */
+const SHORT_S = 12 * 3600;
 
 function secret(): Buffer {
   const s = process.env.SESSION_SECRET;
@@ -41,8 +43,8 @@ export function isOwnerLogin(email: string, password: string): boolean {
   return safeEqual(email.trim().toLowerCase(), e) && safeEqual(password, p);
 }
 
-export function signSession(): string {
-  const payload = Buffer.from(JSON.stringify({ role: 'owner', sub: 'main', exp: Math.floor(Date.now() / 1000) + MAX_AGE_S })).toString('base64url');
+export function signSession(remember = true): string {
+  const payload = Buffer.from(JSON.stringify({ role: 'owner', sub: 'main', exp: Math.floor(Date.now() / 1000) + (remember ? MAX_AGE_S : SHORT_S) })).toString('base64url');
   const sig = crypto.createHmac('sha256', secret()).update(payload).digest('base64url');
   return `${payload}.${sig}`;
 }
@@ -80,9 +82,11 @@ export function getSession(req: Request): Session | null {
   return readSession(cookieValue(req, COOKIE));
 }
 
-export function setSessionCookie(res: Response, token: string) {
+export function setSessionCookie(res: Response, token: string, remember = true) {
   const secure = process.env.NODE_ENV === 'production' || process.env.VERCEL ? '; Secure' : '';
-  res.setHeader('Set-Cookie', `${COOKIE}=${encodeURIComponent(token)}; HttpOnly; Path=/; SameSite=Lax; Max-Age=${MAX_AGE_S}${secure}`);
+  // No Max-Age = session cookie: the browser forgets it when it is closed.
+  const age = remember ? `; Max-Age=${MAX_AGE_S}` : '';
+  res.setHeader('Set-Cookie', `${COOKIE}=${encodeURIComponent(token)}; HttpOnly; Path=/; SameSite=Lax${age}${secure}`);
 }
 
 export function clearSessionCookie(res: Response) {

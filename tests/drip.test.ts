@@ -525,3 +525,13 @@ test('webhook: key can be part of the URL path', async () => {
   const v = await fetch(base + '/api/webhook/whatsapp/hook-key?hub.mode=subscribe&hub.challenge=ok1');
   assert.equal(await v.text(), 'ok1');
 });
+
+test('login: ends with the browser unless "keep me signed in"; /me shows the email', async () => {
+  const raw = async (remember: boolean) =>
+    (await fetch(base + '/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: 'owner@example.test', password: 'owner-test-password', remember }) })).headers.get('set-cookie') ?? '';
+  assert.doesNotMatch(await raw(false), /Max-Age/);
+  assert.match(await raw(true), /Max-Age=2592000/);
+  const me = await call('GET', '/api/auth/me');
+  assert.equal(me.json.email, 'owner@example.test');
+  assert.equal((await call('GET', '/api/auth/me', undefined, false)).json.email, undefined);
+});

@@ -86,9 +86,9 @@ export interface CampaignInput {
 }
 
 export const api = {
-  me: () => call<{ loggedIn: boolean; loginConfigured: boolean }>('GET', '/api/auth/me'),
-  login: async (email: string, password: string) => {
-    const r = await call<{ loggedIn: boolean; token?: string }>('POST', '/api/auth/login', { email, password });
+  me: () => call<{ loggedIn: boolean; loginConfigured: boolean; email?: string }>('GET', '/api/auth/me'),
+  login: async (email: string, password: string, remember = false) => {
+    const r = await call<{ loggedIn: boolean; token?: string }>('POST', '/api/auth/login', { email, password, remember });
     if (API_URL && r.token) setToken(r.token);
     return r;
   },

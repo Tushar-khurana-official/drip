@@ -10,7 +10,7 @@ import { TagsPage } from './components/TagsPage';
 
 type Tab = 'leads' | 'tags' | 'campaigns' | 'templates';
 
-export default function App({ initial, onLogout }: { initial: AppState; onLogout: () => void }) {
+export default function App({ initial, email, onLogout }: { initial: AppState; email?: string; onLogout: () => void }) {
   const [state, setState] = useState(initial);
   const [tab, setTab] = useState<Tab>('leads');
   const [composeFor, setComposeFor] = useState<string[] | null>(null);
@@ -55,9 +55,13 @@ export default function App({ initial, onLogout }: { initial: AppState; onLogout
               <TabButton key={t.id} {...t} active={tab === t.id} onClick={() => setTab(t.id)} />
             ))}
           </nav>
-          <button onClick={onLogout} className="ml-auto sm:ml-2 p-2 rounded-lg hover:bg-slate-100" aria-label="Log out">
-            <LogOut className="w-5 h-5 text-slate-600" />
-          </button>
+          <div className="ml-auto sm:ml-3 flex items-center gap-2">
+            {email && <span className="hidden md:inline text-xs text-slate-500 max-w-[12rem] truncate" title={email}>{email}</span>}
+            <button onClick={onLogout} className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-100 text-sm font-semibold text-slate-700" aria-label="Log out">
+              <LogOut className="w-4 h-4" />
+              <span className="hidden sm:inline">Log out</span>
+            </button>
+          </div>
         </div>
         <nav className="sm:hidden flex border-t border-slate-100">
           {tabs.map((t) => (

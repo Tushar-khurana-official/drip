@@ -4,7 +4,7 @@ import App from './App';
 import { api, ApiError, apiMissing, type AppState } from './services/api';
 import { cls } from './components/ui';
 
-type View = { kind: 'loading' } | { kind: 'login'; error: string | null; configured: boolean } | { kind: 'app'; state: AppState };
+type View = { kind: 'loading' } | { kind: 'login'; error: string | null; configured: boolean } | { kind: 'app'; state: AppState; email?: string };
 
 export default function Root() {
   const [view, setView] = useState<View>({ kind: 'loading' });
@@ -13,7 +13,7 @@ export default function Root() {
     try {
       const me = await api.me();
       if (!me.loggedIn) return setView({ kind: 'login', error: null, configured: me.loginConfigured });
-      setView({ kind: 'app', state: await api.state() });
+      setView({ kind: 'app', state: await api.state(), email: me.email });
     } catch (e) {
       setView({ kind: 'login', error: e instanceof ApiError ? e.message : 'Something went wrong', configured: true });
     }
@@ -28,6 +28,7 @@ export default function Root() {
   return (
     <App
       initial={view.state}
+      email={view.email}
       onLogout={async () => {
         await api.logout().catch(() => undefined);
         window.location.reload();
@@ -39,6 +40,7 @@ export default function Root() {
 function Login({ error, configured, onLoggedIn }: { error: string | null; configured: boolean; onLoggedIn: () => void }) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [remember, setRemember] = useState(false);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState(error);
   const submit = async (e: React.FormEvent) => {
@@ -46,7 +48,7 @@ function Login({ error, configured, onLoggedIn }: { error: string | null; config
     setBusy(true);
     setMsg(null);
     try {
-      await api.login(email, password);
+      await api.login(email, password, remember);
       onLoggedIn();
     } catch (err) {
       setMsg(err instanceof ApiError ? err.message : 'Login failed');
@@ -72,6 +74,10 @@ function Login({ error, configured, onLoggedIn }: { error: string | null; config
         <label className="block">
           <span className={cls.label}>Password</span>
           <input type="password" autoComplete="current-password" required className={cls.input} value={password} onChange={(e) => setPassword(e.target.value)} />
+        </label>
+        <label className="flex items-center gap-2 text-sm text-slate-700">
+          <input type="checkbox" className="accent-indigo-600" checked={remember} onChange={(e) => setRemember(e.target.checked)} />
+          Keep me signed in on this device (30 days)
         </label>
         {msg && <p className="text-sm text-rose-600">{msg}</p>}
         <button className={`${cls.primary} w-full py-2.5`} disabled={busy}>

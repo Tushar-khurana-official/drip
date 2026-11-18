@@ -88,7 +88,8 @@ app.get('/api/health', wrap(async (_req, res) => {
 }));
 
 app.get('/api/auth/me', (req, res) => {
-  res.json({ loggedIn: Boolean(getSession(req)), loginConfigured: loginConfigured() });
+  const loggedIn = Boolean(getSession(req));
+  res.json({ loggedIn, loginConfigured: loginConfigured(), email: loggedIn ? process.env.APP_EMAIL?.trim() : undefined });
 });
 
 app.post('/api/auth/login', (req, res) => {
@@ -100,8 +101,9 @@ app.post('/api/auth/login', (req, res) => {
     return res.status(401).json({ error: 'Wrong email or password' });
   }
   resetLoginAttempts(key);
-  const token = signSession();
-  setSessionCookie(res, token);
+  const remember = req.body?.remember === true;
+  const token = signSession(remember);
+  setSessionCookie(res, token, remember);
   // The token is also returned for front ends on another site (see CORS above).
   return res.json({ loggedIn: true, token });
 });
